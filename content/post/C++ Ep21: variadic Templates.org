@@ -1,0 +1,72 @@
+#+TITLE: C++ Ep21: variadic Templates
+#+DATE: 2018-02-21
+#+LAYOUT: post
+#+TAGS: Template
+#+CATEGORIES: C++ Weekly
+
+* 使用
+** 之前
+在使用可变参数模板之前，如果有几个参数，就需要对应的模块。
+#+HTML: <!-- more -->
+
+#+BEGIN_SRC C++
+  //一个参数
+  template<typename T1>
+  //两个参数
+  template<typename T1, typename T2>
+  //三个参数
+  template<typename T1, typename T2, typename T3>
+  ....
+#+END_SRC
+无论是实现还是效率都非常差
+** 可变参数版本（递归实现）
+对于上面情况，使用可变参数模板实现：
+
+#+BEGIN_SRC C++
+  #include <sstream>
+  #include <iostream>
+  #include <vector>
+
+  template<typename T>
+  std::string to_string_impl(const T& t)
+  {
+	std::stringstream ss;
+	ss << t;
+	return ss.str();
+  }
+
+  std::vector<std::string> to_string(){
+	return {};
+  }
+
+  template<typename P1, typename ...Param>
+  std::vector<std::string> to_string(const P1 &p1, const Param& ...param){
+	std::vector<std::string> s;
+	s.push_back(to_string_impl(p1));
+
+	const auto remainder = to_string(param...);
+	s.insert(s.end(), remainder.begin(), remainder.end());
+	return s;
+  }
+
+  int main(){
+
+	const auto vec = to_string("hardy", 1, 1.3, "hello");
+	for(const auto &o: vec){
+	  std::cout<< o <<"\n";
+	}
+	return 0;
+  }
+#+END_SRC
+** 可变参数版本（initializer list）
+上面的实现会产生大量的模板声明及定义。可继续优化
+
+#+BEGIN_SRC C++
+  template<typename ...Param>
+  std::vector<std::string> to_string(const Param& ...param){
+	return {to_string_impl(param)...};
+  }
+
+#+END_SRC
+技巧使用 *initializer list* 替代递归
+

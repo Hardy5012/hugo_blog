@@ -1,0 +1,237 @@
+#+TITLE: C++ Ep18:The Concurrency API(3)
+#+DATE: 2018-01-30
+#+LAYOUT: post
+#+TAGS:
+#+CATEGORIES:
+
+* Item39:考虑使用 void futures 一次性事件通信
+​有的时候对于一个任务来说，希望有一种机制可以和另外一个任务进行通信，尤其是那种异步运行的任务，并且会出现一种特定事件的任务，
+另外一个任务需要等到这个事件的发生才能继续运行，典型的，可以是等待一个重要的数据结构进行初始化，或者是等待一个计算阶段完成，又或者是检测一个重要的值。
+那么什么样的方式可以处理好这种线程间的通信呢？
+
+一个很明显的方法就是使用 *条件变量* （ *condvar* ） 。如果我把检测条件的任务叫做检测任务，响应条件的任务叫响应任务，那么这个策略简单：响应任务等待条件变量，当事件
+发生时，检测线程通知条件变量。
+#+HTML: <!-- more -->
+#+BEGIN_SRC C++
+  std::condition_variable cv; // condvar for event
+  std::mutex m; // mutex for use with cv
+#+END_SRC
+检测任务中的代码非常简单：
+
+#+BEGIN_SRC C++
+  … // detect event
+  cv.notify_one(); // tell reacting task
+#+END_SRC
+如果有多个响应任务需要通知，则可以用 *notify_all* 替换 *notify_one*.
+
+响应任务中的代码有点复杂，因为在调用 *wait* 这个条件变量之前，需要通过 *std::unique_lock* 来互斥锁住。
+#+BEGIN_SRC C++
+  … // prepare to react
+  { // open critical section
+	  std::unique_lock<std::mutex> lk(m); // lock mutex
+	  cv.wait(lk); // wait for notify;
+  // this isn't correct!
+	  … // react to event
+  // (m is locked)
+		  } // close crit. section;
+  // unlock m via lk's dtor
+  … // continue reacting
+  // (m now unlocked)
+#+END_SRC
+这种方法的第一个问题是有时被称为 *code smell* ：即使代码有效，某些东西似乎也不是很正确。在这种情况下，气味源于需要使用互斥变量。
+互斥锁用于控制对共享数据的访问，但检测和响应任务完全可能不需要这种中介。例如，检测任务可能负责初始化一个全局数据结构，然后把它转换为响应任务使用。
+如果检测任务在初始化之后从不访问数据结构，并且如果在检测任务指示准备就绪之前，响应任务从不访问它，那么两个任务将通过程序逻辑互相排斥。
+这将不需要互斥变量。
+即使你理解这些，还有两个你应该注意的问题：
++ *如果检测任务在响应任务 wait 之前通知条件变量* ，那么响应任务将悬挂。为了通知条件变量来唤醒另一个任务，另一个任务必须等待这个条件变量。如果检测任务在响应任务执行 *wait* 之前执行通知，那么这个响应任务将错过通知，将永远等待。
++ *等待语句不能识别虚假的唤醒* 。事实上在线程 API 中（不仅仅 C++）等待条件变量可能被唤醒，即使没有通知条件变量。正确的代码通过确认所等待的条件确实已经发发，并将其作为唤醒后的第一个动作来处理它们。C++条件变量 API 处理这种异常简单，因为它允许 wait 传等待的条件给 lambda 测试。响应任务代码像下面：
+
+  #+BEGIN_SRC C++
+	cv.wait(lk,
+			[]{ return whether the event has occurred; });
+  #+END_SRC
+利用这个能力，要求响应任务能够确定它所等待的条件是否成立。但是在我们已经考虑的情况下，它所等待的情况是检测线程负责识别事件的发生。响应线程可能无法确定它正在等待的事件是否已经发生。
+这就是为什么它正在等待一个条件变量！
+
+在许多情况下，使用条件变量进行任务通信是非常适合手头的问题，但这似乎并不是其中之一。
+
+对于许多开发人员来说，他们的下一个技巧是共享的布尔标志。 标志初始化是 *false* 。当检测线程识别到它正在查找的事件时，它会设置这个标志：
+
+#+BEGIN_SRC C++
+  std::atomic<bool> flag(false); // shared flag; see
+  // Item 40 for std::atomic
+  … // detect event
+  flag = true; // tell reacting task
+#+END_SRC
+就其本身而言，响应线程只是轮询这个标志。 当它看到该标志被设置时，它知道它正在等待的事件已经发生：
+
+#+BEGIN_SRC C++
+  … // prepare to react
+  while (!flag); // wait for event
+  … // react to event
+#+END_SRC
+这种方法没有基于条件变量的设计的缺点。不需要互斥变量，如果检测任务在响应任务开始轮询之前设置了标志，则没有任何问题，并且不类似于虚假的唤醒。
+
+响应任务中轮询的成本不太好。在任务等待标志被设置的时间内，任务基本上被阻塞，但它仍在运行。因此，它占用了另一个任务可能使用的硬件线程，每次启动或完成其时间片时，都会产生上下文切换的代价，
+并且可能会保持一个可能为了节省电力关闭的内核运行。一个真正被锁住的任务将不会做任何这些事情。 这是基于条件变量方法的一个优点，因为等待调用中的任务是真正被阻止的。
+
+将条件变量和标志的设计相结合是很常见的。一个标志表示是否发生了感兴趣的事件，但是通过互斥锁同步访问该标志。因为互斥锁阻止并发访问该标志，
+所以如条款 40 所解释的那样，不需要该标志是 std :: atomic; 一个简单的布尔就可以。
+
+#+BEGIN_SRC C++
+  std::condition_variable cv; // as before
+  std::mutex m;
+  bool flag(false); // not std::atomic
+  … // detect event
+  {
+	  std::lock_guard<std::mutex> g(m); // lock m via g's ctor
+	  flag = true; // tell reacting task
+  // (part 1)
+  } // unlock m via g's dtor
+  cv.notify_one(); // tell reacting task
+  // (part 2)
+#+END_SRC
+响应任务代码：
+
+#+BEGIN_SRC C++
+  … // prepare to react
+  { // as before
+	  std::unique_lock<std::mutex> lk(m); // as before
+	  cv.wait(lk, [] { return flag; }); // use lambda to avoid
+  // spurious wakeups
+	  … // react to event
+  // (m is locked)
+		  }
+  … // continue reacting
+  // (m now unlocked)
+#+END_SRC
+这种方法避免了我们讨论过的问题。它可以工作，不管在检测任务通知之前，响应任务是否等待，它在虚假唤醒的情况下能正常工作，并且不需要轮询。
+然而，气味依然存在，因为探测任务以非常异样的方式与反应任务沟通。通知条件变量告诉响应任务它正在等待的事件可能已经发生，但是响应任务必须检查标志被设置。
+设置标志告诉响应任务事件已经发生，但是检测任务仍然需要通知条件变量，以便响应任务唤醒并检查标志。这个方法很有效，但看起来并不太干净。
+
+另一种方法是避免条件变量，互斥锁和标志，让响应任务 *wait* 检测任务设置的 *future* 。这似乎是一个奇怪的想法。毕竟，第 38 条解释说，
+future 代表了从被调用者到（通常是异步）调用者的通信通道的接收端，这里在检测和响应任务之间没有被调用者的关系。
+但是，第 38 项也注意到，发送端是 std :: promise，接收端是 future 的通信通道不仅仅是用于被调用与调用的通信。
+这种通信通道可以用于任何需要将信息从程序中的一个地方传输到另一个地方的情况。
+在这种情况下，我们将使用它来将信息从检测任务传输到响应任务，并且我们将传达的信息将是感兴趣的已经发生事件。
+
+设计很简单。 检测任务有一个 std :: promise 对象（即写入通讯通道的末端），响应任务有相应的 future。
+当检测任务发现它正在查找的事件已经发生时，它会设置 std :: promise（即写入通信通道）。 同时，响应任务等待 future。 
+等待阻止响应任务，直到 std :: promise 被设置。
+
+现在，std :: promise 和 futures（即 *std :: future* 和 *std :: shared_future* ）都是需要类型参数的模板。
+该参数指示要通过通信通道发送的数据的类型。但在我们的例子中，没有数据可以传达。对这个响应任务感兴趣的唯一事情就是它的 future 是否已设置。
+我们需要的 std :: promise 和 future 模板是一种类型，表示没有数据要通过通信通道传送。
+类型 *void*,  因此，检测任务将使用 std :: promise <void>, 响应任务使用 std :: future <void>或 std :: shared_future <void>。
+当感兴趣的事件发生时，检测任务将设置其 std :: promise <void>，并且响应任务将等待其 future。
+即使响应任务不会接收到任何来自检测任务的数据，通信通道将允许响应任务知道何时检测任务在其 std :: promise 上调用 set_value “写入”了 *void* 数据。
+
+#+BEGIN_SRC C++
+  std::promise<void> p; // promise for
+  // communications channel
+#+END_SRC
+检测任务代码：
+#+BEGIN_SRC C++
+  … // detect event
+  p.set_value(); // tell reacting task
+#+END_SRC
+响应任务代码，非常简单：
+#+BEGIN_SRC C++
+  … // prepare to react
+  p.get_future().wait(); // wait on future
+  // corresponding to p
+  … // react to event
+#+END_SRC
+就像使用标志的方法一样，这种设计不需要互斥，不管工作如何检测任务是否在响应任务等待之前设置其 std :: promise，并且不受虚假唤醒的影响。
+（只有条件变量容易受到这个问题的影响）。像基于条件变量的方法一样，在等待呼叫之后，反应任务真正被阻塞，所以在等待时不消耗系统资源。 完美，对吧？
+不完全是。当然，基于 future 的方法可以避开这些滩涂，但还有其他的担忧。
+例如，第 38 项解释说 std :: promise 和 future 之间是共享状态，共享状态通常是动态分配的。
+因此，您应该假设这种设计会导致基于堆的分配和释放的成本。
+
+也许更重要的是，一个 std :: promise 可能只能被设置一次。std :: promise 和 future 之间的通信通道是一次性机制：不能重复使用。
+这与基于 condvar 和 flag 的设计有显着区别，两者都可以用来多次通信。
+
+一次性限制不像您想象的那样受到限制。假设你想创建一个挂起状态的系统线程。也就是说，您希望获得与创建线程相关的所有开销，以便在线程上执行某些操作时，将避免正常的线程创建延迟。
+或者你可能想创建一个暂停的线程，以便在运行之前配置它。这种配置可能包括诸如设置其优先级或内核关联性的事情。
+C ++并发 API 没有办法做这些事情，但 std :: thread 对象提供了 *native_handle* 成员函数，让您访问平台的底层线程 API（通常是 POSIX 线程或 Windows 线程）。
+较低级别的 API 通常可以配置线程特征，例如优先级和关联性。
+
+假设你只想暂停线程一次（在创建之后，但在它运行它的线程函数之前），使用 void future 的设计是一个合理的选择。
+
+#+BEGIN_SRC C++
+  std::promise<void> p;
+  void react(); // func for reacting task
+  void detect() // func for detecting task
+  {
+	  std::thread t([] // create thread
+					{
+						p.get_future().wait(); // suspend t until
+						react(); // future is set
+					});
+	  … // here, t is suspended
+  // prior to call to react
+		  p.set_value(); // unsuspend t (and thus
+  // call react)
+	  … // do additional work
+		  t.join(); // make t unjoinable
+  } // (see Item 37)
+#+END_SRC
+因为在 *detect* 的所有路径之外让 *t* 变得不可连接非常重要，所以使用像 Item 37 的 ThreadRAII 这样的 RAII 类似乎是可取的。
+
+#+BEGIN_SRC C++
+  void detect()
+  {
+	  ThreadRAII tr( // use RAII object
+		  std::thread([]
+					  {
+						  p.get_future().wait();
+						  react();
+					  }),
+		  ThreadRAII::DtorAction::join // risky! (see below)
+		  );
+	  … // thread inside tr
+  // is suspended here
+		  p.set_value(); // unsuspend thread
+  // inside tr
+	  …
+		  }
+#+END_SRC
+这看起来比较安全。问题是，如果在第一个“...”区域（看注释“thread inside tr is suspended here”）发出异常，set_value 永远不会被 p 调用。
+这意味着在 lambda 内部等待的调用将永远不会返回。这又意味着运行 lambda 的线程将永远不会完成，问题来了
+因为 RAII 对象 tr 已被配置为在 tr 的析构函数中连接该线程。换句话说，如果从代码的第一个“...”区域发出异常，因为 tr 的析构函数将永远不会完成，
+此函数将挂起。有办法可以解决这个问题，但是我会以练习的方式留下（http://scottmeyers.blogspot.com/2013/12/threadraii-thread-suspension-trouble.html）。
+在这里，我想展示如何将原始代码（不使用 ThreadRAII）扩展为暂停，然后解除不仅仅是一个响应任务，而是多个。
+这是一个简单的泛化，因为关键是在响应代码中使用  *std :: shared_futures*  而不是 std :: future。
+一旦你知道了 std :: future 的共享成员函数将共享状态的所有权转移给了 share 所产生的 std :: shared_future 对象，代码就会自行写入。
+唯一的微妙之处在于每个响应线程都需要自己拷贝 std :: shared_future 来引用共享状态，所以从  *share*  中获得的 std :: shared_future 被运行在响应线程上的 lambdas 通过值捕获.
+
+#+BEGIN_SRC C++
+  std::promise<void> p; // as before
+  void detect() // now for multiple
+  { // reacting tasks
+	  auto sf = p.get_future().share(); // sf's type is
+  // std::shared_future<void>
+	  std::vector<std::thread> vt; // container for
+  // reacting threads
+	  for (int i = 0; i < threadsToRun; ++i) {
+		  vt.emplace_back([sf]{ sf.wait(); // wait on local
+			  react(); }); // copy of sf; see
+	  } // Item 42 for info
+  // on emplace_back
+	  … // detect hangs if
+  // this "…" code throws!
+		  p.set_value(); // unsuspend all threads
+	  …
+		  for (auto& t : vt) { // make all threads
+			  t.join(); // unjoinable; see Item 2
+		  } // for info on "auto&"
+  }
+#+END_SRC
+使用 future 的设计可以实现这一效果的事实值得注意，这就是为什么您应该考虑一次性事件通信的原因。
+** 记住
++ 对于简单的事件通信，基于 condvar 的设计需要一个多余的互斥体，对检测和响应任务的相对进度施加约束，并要求响应任务验证事件已经发生。
++ 使用标志的设计可以避免这些问题，但基于轮询而不是阻塞。
++ 一个 condvar 和标志可以一起使用，但是由此产生的通信机制有点不自然。
++ 使用 std :: promises 和 futures 可以避免这些问题，但是这种方法使用堆内存来实现共享状态，而且它仅限于一次性通信。
+* 参考
+  原文：effective-modern-c++

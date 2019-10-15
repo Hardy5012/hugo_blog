@@ -1,0 +1,260 @@
+#+TITLE: C++ Ep13:Rvalue References,Move Semantics,and Perfect Forwarding(5)
+#+DATE: 2018-01-09
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++
+#+CATEGORIES: Modern C++
+
+* Item 30:熟悉完美转发失败的情况
+完美转发是 C++11 箱子里最令人注目的特性之一，完美转发，它是完美的！额，打开箱子后，然后你会发现理想中的“完美”和现实中的“完美”有点出入。
+C++11 的完美转发非常棒，但当且仅当你愿意忽略一两个特殊情况，才能真正得到完美。该条款就是为了让你熟悉那些特殊情况。
+
+在着手探索我们的特殊情况之前，值得回顾一下“完美转发”的意思。“转发”的意思是一个函数传递——转发——它的参数到另一个函数，
+目的是为了让第二个函数（被转发参数的函数）收到第一个函数（进行转发的函数）接受到的对象。这个规则排除值语义的形参，
+因为它们只是拷贝原始调用者传递的参数，我们想要的是，接受转发参数的函数能够处理最开始传递进来的对象。指针形参也排除在外，
+因为我们不想强迫调用者传递指针。通常，当发生有目的的转发时，我们都是处理形参为引用的参数。
+#+HTML: <!-- more -->
+完美转发意思是：我们不单单转发对象，我们还转发它们重要的特性：它们的类型，它们是右值还是左值，它们是否是 const 或者 volation 修饰的。
+配合我们观察到的我们一般处理引用参数，这暗示着我们会把完美转发用到通用引用（看条款 24）上，
+因为只有通用引用形参才会把传递给它们的实参的左值或右值信息进行编码。
+
+假设我们有一些函数 f，然后我们写了个函数（事实上是模板函数），这个函数把参数转发到函数 f。我们需要的关键代码是这样的：
+
+#+BEGIN_SRC C++
+  template<typename T>
+  void fwd(T&& param) // accept any argument
+  {
+	  f(std::forward<T>(param)); // forward it to f
+  }
+#+END_SRC
+按照本性，进行转发的函数是通用的。例如，fwd 模板，应该可以接受一些类型不同的参数，然后转发它所得到的。对于这种通用性的一种有逻辑的扩展是，
+fwd 不应该只是个模板，而是个可变参数模板，因此可以接受任意数目的参数，可变参数模板 fwd 看起来应该是这样的：
+
+#+BEGIN_SRC C++
+  template<typename... Ts>
+  void fwd(Ts&&... params) // accept any arguments
+  {
+		  f(std::forward<Ts>(params)...); // forward them to f
+  }
+#+END_SRC
+这种形式的模板你能在其它地方见到，例如标准库容器的 emplace 函数（看条款 42），和智能指针工厂函数——std::make_shared 和 std::make_unique
+（看条款 21）。
+
+给定我们的目标函数 f 和进行转发的函数 fwd，如果用某个实参调用 f 会做某件事，然后用同样的实参调用 fwd，但 fwd 里的 f 行为和前面那种情况不一样，
+那么完美转发是失败的：
+
+#+BEGIN_SRC C++
+  f( expression ); // if this does one thing,
+  fwd( expression ); // but this does something else, fwd fails
+  // to perfectly forward expression to f
+#+END_SRC
+几种类型的实参会导致这种失败，知道它们是什么和如何工作是很重要的，让我们来观察这几种不能完美转发的类型吧。
+** 大括号初始值
+假如 f 的声明是这样的：
+
+#+BEGIN_SRC C++
+  void f(const std::vector<int>& v);
+#+END_SRC
+这种情况，用大括号初始值调用 f 是可以通过编译的：
+
+#+BEGIN_SRC C++
+  f({ 1, 2, 3 }); // fine, "{1, 2, 3}" implicitly
+  // converted to std::vector<int>
+#+END_SRC
+但如果把大括号初始值传递给 fwd 就不能通过编译：
+
+#+BEGIN_SRC C++
+  fwd({ 1, 2, 3 }); // error! doesn't compile
+#+END_SRC
+那是因为使用大括号初始值会让完美转发失败。
+
+这种失败的原因都是相同的。在直接调用 f 时（例如 f({1,2,3})），编译器观察调用端的实参，又观察 f 函数声明的参数类型，然后编译器对比这两个类型，
+如果是相互兼容的，然后，如果是必要的话，编译器会把类型进行隐式转发，使得调用成功。 _在上面的例子中，编译器从{1,2,3}生成一个临时的 std::vector<int>对象_ ，
+因此 f 的参数 v 可绑定到一个 std::vector<int>对象。
+
+当使用转发模板 fwd 间接调用 f 时，编译器不会比较调用端传递给 fwd 的实参和 f 声明的形参，取而代之的是，编译器推断传递给 fwd 实参的类型，
+然后比较推断的类型和 f 声明的形参类型。当下面某种情况发生时，完美转发会失败：
++ 编译器不能推断出传递给 fwd 参数的类型，在这种情况下，代码编译失败。
++ 编译器为传递给 fwd 参数推断出“错误的”类型。这里的“错误的”，可以表示实例化的 fwd 不能编译推断出来的类型，还可以表示使用 fwd 推断的类型调用 f 的行为与直接使用传递给 fwd 的参数调用 f 的行为不一致。这种不一致行为的一种源头是 f 是个重载函数的名字，然后，根据“不正确的”推断类型，fwd 里的 f 重载调用与直接调用 f 的行为不一样。
+
+在上面“fwd({1,2,3})”的例子中，问题在于，给没有声明为 std::initialist_list 类型的模板参数传递大括号初始值，正如标准库所说，
+这是“ *non-deduced context* ”。 _通俗易懂的说，那意味着在 fwd 的调用中，编译器禁止从表达式{1,2,3}推断出一个类型，因为 fwd 的形参不是声明为 std::initializer_list_ 。
+因为那是被禁止推断，所以编译器拒绝这样调用。
+
+有趣的是，条款 2 解释过 auto 变量在用大括号初始值初始化时会进行类型推断。这些变量被视为是 std::initializer_list 对象，
+然后对于进行转发的函数的形参应该被推断为 std::initializer_list 的场合，提供了一个简单的应对办法——用 auto 声明一个局部变量，
+然后把局部变量传递给进行转发的函数：
+
+#+BEGIN_SRC C++
+  auto il = { 1, 2, 3 }; // il's type deduced to be
+  // std::initializer_list<int>
+  fwd(il); // fine, perfect-forwards il to f
+#+END_SRC
+** 0 和 NULL 作为空指针
+条款 8 解释过，当你尝试把 0 和 NULL 作为空指针传递给一个模板，类型推断就会出错，编译器会把你传入的参数推断为整型数类型（通常是 int），而不是指针类型。
+这就导致了 0 和 NULL 都不可以作为空指针被完美转发，不过，解决办法也很容易：用 nullptr 代替 0 或 NULL。关于细节，请看条款 8。
+** 只声明的 static const 成员变量
+作为一个通用的规则：不需要在类中定义 *static const 成员变量* ；声明它就行了。那是因为编译器会为这些成员变量的值进行  *const propagation（常数传播）* ，因此不需要为这些变量提供内存。例如，思考这份代码：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  static const std::size_t MinVals = 28; // MinVals' declaration
+	  …
+  };
+  … // no defn. for MinVals
+  std::vector<int> widgetData;
+  widgetData.reserve(Widget::MinVals); // use of MinVals
+#+END_SRC
+在这里，我们使用 Widget::MinVals（下面简称为 Minvals）来指定 widgetData 的初始容量，尽管 MinVals 缺乏定义。
+编译器忽视 MinVals 没有定义（就像它们被要求这样）然后把 28 放到出现 MinVals 的地方。事实上没有为 MinVals 的值留出存储空间是不成问题的，
+ _如果取 MinVals 的地址（例如，某人创建一个指向 MinVals 的指针），然后 MinVals 才会去请求存储空间的值（因此指针就有东西可指）_ ，然后对于上面的代码，
+虽然它可以编译，但它会链接失败，除非为 MinVals 提供定义。
+
+把那些记住心里，然后想象 f（fwd 把参数转发的目的函数）是这样声明的：
+
+#+BEGIN_SRC C++
+  void f(std::size_t val);
+#+END_SRC
+用 MinVals 直接调用 f 是没问题的，因为编译器会用 28 代替 MinVals：
+
+#+BEGIN_SRC C++
+  f(Widget::MinVals); // fine, treated as "f(28)"
+#+END_SRC
+但是，当我们通过 fwd 调用 f 时，事情就没有那么一帆风顺了：
+
+#+BEGIN_SRC C++
+  fwd(Widget::MinVals); // error! shouldn't link
+#+END_SRC
+代码可以编译，但是它不能链接。如果你能想起我们取 MinVals 地址会发生什么，你就很聪明啦，那是因为表面下的问题是相同的。
+
+尽管源代码没有取 MinVals 的地址，但 fwd 的参数是个通用引用，然后引用呢，在编译器生成的代码中，通常被视为指针。
+ _对于程序的二进制代码中（或对于硬件），指针和引用在本质上是同一个东西_ 。在这个层次上，有一句反应事实的格言：引用只是会自动解引用的指针。
+情况既然是这样了，MinVals 被引用传递和被指针传递是相同的，而这样的话，必须要有指针可以指向的内存。
+以引用传递 static const 成员变量通常要求它们被定义过，而这个要求可以导致代码完美转发失败。
+
+在之前的讨论中，你可能会注意到我的一些含糊用词。代码“不应该”链接，引用“通常”被视为指针，以引用传递 static const 成员变量“通常”要求它们被定义过。
+这就好像是我知道一些东西，但是没有告诉你。
+
+那是因为，我现在告诉你。根据标准库，以引用传递 MinVals 要求 MinVals 被定义，但不是所有实现都强迫服从这个要求。因此，取决于你的编译器和链接器，
+你可能会发现你可以完美转发没有定义过的 static const 成员变量。如果真的可以，恭喜你，不过没有理由期望这样的代码能够移植。
+为了让代码可移植，就像我们谈及那样，简简单单地为 static const 成员变量提供一份定义。对于 MinVals，代码是这样的：
+
+#+BEGIN_SRC C++
+  const std::size_t Widget::MinVals; // in Widget's .cpp file
+#+END_SRC
+留意到定义没有重复初始值（对于 MinVals 这个例子，是 28），不过，不用在意这个细节。如果你在声明和定义两个地方都忘记提供初始值，你的编译器会发出抱怨，
+然后就能让你记起你需要在其中一个地方指定初始值。
+** 重载函数名字和模板名字
+假如我们的函数 f（我们想要借助 fwd 转发参数到该函数）想通过接受一个函数作为参数来定制它的行为，假定该函数接受和返回 int，那么 f 应该被声明为这样：
+
+#+BEGIN_SRC C++
+  void f(int (*pf)(int)); // pf = "processing function"
+#+END_SRC
+值得注意的是 f 也可以被声明为使用简单的非指针函数。这样的声明看起来是下面这样的，尽管它和上面的声明具有相同的意思：
+
+#+BEGIN_SRC C++
+  void f(int pf(int)); // declares same f as above
+#+END_SRC
+无所谓，现在假如我们有个重载函数，processVal：
+
+#+BEGIN_SRC C++
+  int processVal(int value);
+  int processVal(int value, int priority);
+#+END_SRC
+我们可以把 processVal 传给 f，
+
+#+BEGIN_SRC C++
+  f(processVal); // fine
+#+END_SRC
+不过有一些让我们惊讶的东西。f 需要的是一个指向函数的指针作为它的参数，但是 processVal 既不是个函数指针，也不是一个函数，它是两个不同函数的名字。
+不过，编译器知道它们需要哪个 processVal：匹配 f 形参类型的那一个。因此，编译器会选择接受一个 int 的 processVal，然后把那个函数地址传给 f。
+
+使得代码可以工作的原因是 f 的声明让编译器知道需求那个版本的 processVal。但是，fwd，是个模板函数，没有任何关于需求类型的信息，
+这让编译器不能决定——应该传递哪个重载函数：
+
+#+BEGIN_SRC C++
+  fwd(processVal); // error! which processVal?
+#+END_SRC
+单独的 processVal 没有类型。 没有类型，就不能进行类型推断；没有类型推断，就留给我们另一种完美转发失败的情况。
+
+当我们尝试用一个模板函数名字来代替重载函数名字，会出现相同的问题。一个模板函数不是代表成函数，它代表很多函数：
+
+#+BEGIN_SRC C++
+  template<typename T>
+  T workOnVal(T param) // template for processing values
+  { … }
+  fwd(workOnVal); // error! which workOnVal
+  // instantiation?
+#+END_SRC
+像 fwd 这种进行完美转发的函数，想要接受一个重载函数名字或者模板名字的方法是：手动指定你想要转发的那个重载或者实例化。
+例如，你可以创建一个函数指针，它的类型与 f 的形参类型相同，然后用 processVal 和 workOnVal 初始化那个指针
+（所以能够选择合适的 processVal 版本或生成合适的 workOnValue 实例化），然后把指针传递给 fwd：
+
+#+BEGIN_SRC C++
+  using ProcessFuncType = // make typedef;
+	  int (*)(int); // see Item 9
+  ProcessFuncType processValPtr = processVal; // specify needed
+  // signature for
+  // processVal
+  fwd(processValPtr); // fine
+  fwd(static_cast<ProcessFuncType>(workOnVal)); // also fine
+#+END_SRC
+当然，这需要你知道 fwd 转发的目的函数需要的函数指针类型，我们可以合理假设完美转发函数的文档或注释会说明转发的目的函数需要的函数指针类型。
+最后，进行完美转发的函数被设计来能够接受任何东西，所以如果没有文档告诉你要传递的类型，那你怎么知道呢？
+** 位域（Bitfields）
+最后一种完美转发失败的情况是，当位域被用作函数实参。为了在实际中知道这是什么意思，观察一个模型化的 IPV4 头部：
+
+#+BEGIN_SRC C++
+  struct IPv4Header {
+	  std::uint32_t version:4,
+		  IHL:4,
+		  DSCP:6,
+		  ECN:2,
+		  totalLength:16;
+	  …
+  };
+#+END_SRC
+如果我们可怜的函数 f（我们的转发函数 fwd 永恒的目标）被声明为接受一个 std::size_t 参数，然后用 IPv4Header 对象的 totalLength 域来调用 f，
+编译器不会发出怨言：
+
+#+BEGIN_SRC C++
+  void f(std::size_t sz); // function to call
+  IPv4Header h;
+  …
+  f(h.totalLength); // fine
+#+END_SRC
+但是，想要借助 fwd 把 h.totalLength 转发 f，就是另外的结果了：
+
+#+BEGIN_SRC C++
+  fwd(h.totalLength); // error!
+#+END_SRC
+问题在于，fwd 的形参是个引用，而 h.totalLength 是个非 const 的位域。这听起来可能不是很糟糕，但是 C++标准对于这种结合，
+平淡无趣地讲：“ *A non-const reference shall not be bound to a bit-field.* ”（不是常量引用不能绑定位域。）对于这个禁令，
+原因很充分： _位域可能是包括机器字（world）的任意部分（例如，32 位 int 的 3-5 个位。），但是没有方法直接获取它们的地址_ 。
+我之前提起过在硬件层面上引用和指针是相同的东西，然后，就像没有办法创建指向任意位的指针
+（C++表明可指向的最小的东西是一个 char），也没有办法对任意位进行绑定引用。
+
+绕过不能完美转发转发位域很简单，只要你意识到接受位域作为参数的函数只是接收它的值的拷贝。毕竟，没有函数可以对位域绑定引用，
+也没有函数可以接受一个指向位域的指针，因为指向位域的指针不可能存在。可以传递位域的参数种类只有传值参数，和，
+有趣的常量引用（reference-to-const），在传值参数的情况里，被调用的函数明显接收位域的值的拷贝，而在常量引用参数的情况里，
+标准规定引用实际上绑定的是位域的值的拷贝（这份拷贝存储在某些标准整型类型中，例如 int）。常量引用不会绑定位域，它们绑定的是“正常的”对象，
+这个对象拷贝了位域的值。
+
+那么，把位域传递给进行完美转发函数的关键是，利用转发目的函数总是接收位域的值拷贝这个优势。所以你可以自己进行拷贝，然后用这个拷贝调用转发函数。
+例如，在 IPv4Header 这个例子，可以用这个把戏：
+
+#+BEGIN_SRC C++
+  // copy bitfield value; see Item 6 for info on init. form
+  auto length = static_cast<std::uint16_t>(h.totalLength);
+  fwd(length); // forward the copy
+#+END_SRC
+** 总结
+在大多数情况下，完美转发工作得像它宣称那样，你很少需要仔细考虑它。但有时它不能工作——当一些看起来合理的代码编译失败，或者可以编译，
+行为却和你预料的不一样——知道完美转发有瑕疵是重要的，同样重要的是知道如何绕过它们。在大多数情况下，完美转发是直截了当的。
+** 记住
++ 当模板类型推断失败或推断出错误的类型时，完美转发会失败。
++ 导致完美转发失败的几种实参有：大括号初始值，0 和 NULL 代表的空指针，只声明的 static const 成员变量，模板函数名字和重载函数名字，位域。
+* 参考
+  原文：effective-modern-c++
+  翻译：http://blog.csdn.net/big_yellow_duck/article/category/6352345

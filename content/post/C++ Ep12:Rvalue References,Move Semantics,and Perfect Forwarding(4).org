@@ -1,0 +1,318 @@
+#+TITLE: C++ Ep12:Rvalue References,Move Semantics,and Perfect Forwarding(4)
+#+DATE: 2018-01-07
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++
+#+CATEGORIES: Modern C++
+
+* Item 28:理解引用折叠
+Item 23 说过，当一个参数被传给模板函数时，不管这个参数是左值还是右值，模板参数的类型推导都会对参数进行编码。
+那个 Item 没有解释这样的情况只在实参被用在初始化一个 universal 引用类型的型参时才会发生，
+但是它没有解释是有理由的：universal 引用在 Item24 之前没有被介绍过。
+同时，这些关于 universal 引用以及左右值编码的观察报告说明了对于这个模板：
+
+#+BEGIN_SRC C++
+  template<typename T>
+  void func(T&& param);
+#+END_SRC
+无论传给 param 的参数是左值还是右值，被推导出来的模板参数 T 将会被编码。
+#+HTML: <!-- more -->
+编码的机制很简单。 _当一个左值做为一个参数传入时，T 被推导为一个左值引用。当一个右值被传入时，T 被推导为没有引用_ 。
+（记住这种不对称：左值被编码成左值引用，但是右值被编码成没有引用。）因此：
+
+#+BEGIN_SRC C++
+  Widget widgetFactory(); // function returning rvalue
+  Widget w; // a variable (an lvalue)
+  func(w); // call func with lvalue; T deduced
+  // to be Widget&
+  func(widgetFactory()); // call func with rvalue; T deduced
+  // to be Widget
+#+END_SRC
+两个对 func 的调用中，Widget 都被传入了，但是因为一个 Widget 是左值，一个是右值，模板参数 T 被推导成了不同的类型
+。就像我们马上要看到的一样，这个特性就是能决定 universal 引用成为右值引用或左值引用的关键，它同时也是 std::forward 能完成其工作的底层机制。
+
+在我们进一步观察 std::forward 和 universal 引用之前，我们必须注意到，在 C++中对引用进行引用是非法的。也许你应该尝试去声明一个，你的编译器会谴责你：
+
+#+BEGIN_SRC C++
+  int x;
+  …
+  auto& & rx = x; // error! can't declare reference to reference
+#+END_SRC
+但是想想当一个左值被传给以 universal 引用为参数的函数模板时发生了什么：
+
+#+BEGIN_SRC C++
+  template<typename T>
+  void func(T&& param); // as before
+  func(w); // invoke func with lvalue;
+  // T deduced as Widget&
+#+END_SRC
+如果我们使用被推导出来的 T 类型（也就是 Widget&）来实例化模板，我们得到了：
+
+#+BEGIN_SRC C++
+  void func(Widget& && param); 
+#+END_SRC
+一个引用的引用！并且到目前为止，编译器并没有发出抗议。我们从 Item 24 中知道，这是因为 universal 引用 param 被一个左值初始化，
+param 的类型应该是一个左值引用，但是编译器得到 T 的推导类型后是怎么用最终的签名来替换原来的签名的？最终的签名是这样的：
+
+#+BEGIN_SRC C++
+  void func(Widget& param);
+#+END_SRC
+答案是 *引用折叠* 。是的，虽然通过你自己声明一个引用的引用是被禁止的，但是编译器可能在特定的环境下创造出引用的引用，
+模板实例化就是其中的一个场景。当编译器生成引用的引用时，引用折叠规定了接下来会发生什么。
+
+我们有两种引用（左值和右值），所以引用的引用一共有 4 种可能的组合（左值到左值，左值到右值，右值到左值，右值到右值）。
+如果一个引用的引用在被允许的环境（比如，在模板实例化中）下出现了，引用会折叠成单个引用，并遵循以下规则：
+
+#+BEGIN_SRC dot
+  如果两个引用中有任何一个引用是左值引用，结果是一个左值引用。不然的话（也就是，两个引用都是右值引用），结果会是一个右值引用。
+#+END_SRC
+在我们上面的例子中，被推导 Widget&类型让模板函数产生了一个右值引用的左值引用，做为其替代品，引用折叠告诉我们结果是一个左值引用。
+
+引用折叠是让 std::forward 正常工作的关键部分。就像 Item 25 解释的那样，std::forward 被用在 universal 引用的参数上，
+所以一个常见的使用情况看起来像是这样：
+
+#+BEGIN_SRC C++
+  template<typename T>
+  void f(T&& fParam)
+  {
+	  … // do some work
+		  someFunc(std::forward<T>(fParam)); // forward fParam to
+  } // someFunc
+#+END_SRC
+因为 fParam 是一个 universal 引用，我们知道无论被传给 f 的参数（也就是用来初始化 fParam 的表达式）是左值还是右值，
+类型参数 T 将被编码。所以只有当被传给 f 的参数是一个右值，T 被编码成非引用类型时，std::forward 函数会将 fParam（一个左值）转化为右值。
+
+这里给出 std::forward 怎么实现才能做到上面所说的工作：
+
+#+BEGIN_SRC C++
+  template<typename T> // in
+  T&& forward(typename // namespace
+			  remove_reference<T>::type& param) // std
+  {
+	  return static_cast<T&&>(param);
+  }
+#+END_SRC
+这和标准形式没有完全一样（我省略了一些接口细节），但是它们之间的不同之处对于理解 std::forward 是怎么工作的影响不大。
+
+假设传给 f 的参数是一个 Widget 类型的左值。T 会被推导成 Widget&，然后对 std::forward 的调用将被实例化成 std::<Widget&>。
+将 Widget&插入到 std::forward 的实现中，将会产生如下代码：
+
+#+BEGIN_SRC C++
+  Widget& && forward(typename
+					 remove_reference<Widget&>::type& param)
+  { return static_cast<Widget& &&>(param); }
+#+END_SRC
+type trait std::remove_reference<Widget&>::type 产生了 Widget（看 Item 9）类型，所以 std::forward 变成了：
+
+#+BEGIN_SRC C++
+  Widget& && forward(Widget& param)
+  { return static_cast<Widget& &&>(param); }
+#+END_SRC
+引用折叠同样使用到返回类型和转换中，std::forward 最终结果为：
+
+#+BEGIN_SRC C++
+  Widget& forward(Widget& param) // still in
+  { return static_cast<Widget&>(param); } // namespace std
+#+END_SRC
+
+就像你看到的那样，当一个左值参数被传给临时函数 f，实例化后的 std::foward 的参数和返回值都成了左值引用。
+在 std::forward 的中的转换没有做任何事情，因为参数的类型已经是 Widget&了，所以将它转换成 Widget&是没有效果的。
+因此一个左值类型的参数被传给 std::forward 后将会返回一左值引用。根据定义，左值引用是左值，所以传入一个左值给 std::forward 酱让一个左值被返回，
+就和我们期望的一样。
+
+现在假设被传给 f 的参数是一个 Widget 类型的右值。这种情况下，f 的类型参数 T 将被推导成 Widget。因此，
+在 f 的函数调用中，std::forward 将被推导成 std::。在 std::forward 中用 Widget 来代替 T 就能得到这样的实现：
+
+#+BEGIN_SRC C++
+  Widget&& forward(typename
+				   remove_reference<Widget>::type& param)
+  { return static_cast<Widget&&>(param); }
+#+END_SRC
+对一个非引用类型的 Widget 使用 std::remove_reference 将产生 Widget 一开始的类型（也就是 Widget），所以 std::forward 成了下面这个样子：
+
+#+BEGIN_SRC C++
+  Widget&& forward(Widget& param)
+  { return static_cast<Widget&&>(param); }
+#+END_SRC
+这里没有引用的引用，所以这里没有引用折叠，并且这是 std::forward 调用的最后一个实例化版本
+
+从一个函数返回的右值引用被定义成右值，所以这种情况下，std::forward 将会把 f 的参数 fParam(一个左值)变成一个右值。
+最后的结果就是，一个被传给 f 的右值参数将被当成一个右值转发给别的函数，这完全就是我们想要它发生的。
+
+在 C++14 中，由于 std::remove_reference_t 的存在，使得我们能将 std::forward 实现得更加简洁一些：
+
+#+BEGIN_SRC C++
+  template<typename T> // C++14; still in
+  T&& forward(remove_reference_t<T>& param) // namespace std
+  {
+	  return static_cast<T&&>(param);
+  }
+#+END_SRC
+
+引用重叠会在 4 中情况下发生。第一种也是最常见的情况是模板的实例化。第二种 auto 变量的类型推导。
+它的实现细节在本质上和模板的类型推导是一样的，因为对 auto 变量的类型推导以及对模板参数的类型推导在本质上是一样的。
+再次考虑来自本 Item 前面的例子:
+
+#+BEGIN_SRC C++
+  template<typename T>
+  void func(T&& param);
+  Widget widgetFactory(); // function returning rvalue
+  Widget w; // a variable (an lvalue)
+  func(w); // call func with lvalue; T deduced
+  // to be Widget&
+  func(widgetFactory()); // call func with rvalue; T deduced
+  // to be Widget
+#+END_SRC
+同样的形势也出现在 auto 中。这个声明：
+
+#+BEGIN_SRC C++
+  auto&& w1 = w;
+#+END_SRC
+用一个左值来初始化 w1，所以 auto 会被推导成 Widget&类型。将 Widget&插入到 w1 的 auto 声明式中会产生出这样的引用到引用的代码，
+
+#+BEGIN_SRC C++
+  Widget& && w1 = w;
+#+END_SRC
+经过引用折叠之后，会变成：
+
+#+BEGIN_SRC C++
+  Widget& w1 = w;
+#+END_SRC
+最后，w1 就是一个左值引用了
+
+另一方面，这个声明式，
+
+#+BEGIN_SRC C++
+  auto&& w2 = widgetFactory();
+#+END_SRC
+用右值来初始化 w2，使得 auto 会被推导成非引用的 Widget 类型。将 auto 替换成 Widget 会使我们得到这样的代码：
+
+#+BEGIN_SRC C++
+  Widget&& w2 = widgetFactory();
+#+END_SRC
+这里没有引用的引用，所以我们已经做完了；w2 是一个右值引用。
+我们现在能够完全理解在 Item 24 被引入的 universal 引用了。一个 universal 引用不是一个新的引用，
+实际上，当满足两种条件的时候，它是一个右值引用：
++ 类型推导将会区分左值和右值。左值类型的 T 被推导成 T&，右值类型的 T 将产生 T 作为它们的推导类型。
++ 发生了引用折叠。
+
+universal 引用的概念很有用，因为它能将你从折叠的存在中解放出来，使得你只用在心里用左值或右值推导不同的类型,
+并且在将所推导的类型应用引用折叠规则之后心理代入它们出现的上下文。
+
+我说过这里有 4 种情况，但是我们还只讨论了两种： _─模板实例化和 auto 类型推导。第三种情况是使用 typedef 和别名声明的_ 。
+如果在创造或评估 typedef 的时候，引用的引用出现了，引用折叠会介入来消除它们。举个例子，假设我们有一个 Widget 类模板，
+并且在其中潜入一个右值引用类型的 typedef，
+
+#+BEGIN_SRC C++
+  template<typename T>
+  class Widget {
+  public:
+	  typedef T&& RvalueRefToT;
+	  …
+  };e
+#+END_SRC
+并且假设我们使用一个 lvalue 引用类型来实例化了一个 Widget：
+
+#+BEGIN_SRC C++
+  Widget<int&> w;
+#+END_SRC
+在 Widget 模板种用 int&来替换 T 让我们得到如下的 typedef：
+
+#+BEGIN_SRC C++
+  typedef int& && RvalueRefToT;
+#+END_SRC
+引用折叠将它变成了这个样子，
+
+#+BEGIN_SRC C++
+  typedef int& RvalueRefToT;
+#+END_SRC
+它很清晰地描绘了一个场景，就是我们给 typedef 的命名并没有描述出我们想要的东西：当使用一个左值引用来实例化 Widget 的时候，
+RvalueRefToT 是一个左值引用。
+
+最后一种引用折叠的情况就是在 decltype 中。如果在调用 decltype 并进行类型分析的时候，引用的引用出现了，
+那么引用折叠就是介入来消除它。（关于 decltype 的信息，请看 Item 3。）
+** 记住
++ 引用折叠发生在 4 种上下文中：模板实例化，auto 类型生成，创建和使用 typedef 和别名声明，还有 decltype。
++ 当编译器在引用折叠的上下文中生成引用的引用时，结果将成为单个引用。 如果两个原始引用中有任何一个引用是左值引用，结果是一个左值引用。否则为右值引用。
++ Universal 引用是一个右值引用在上下文类型推导区分左值和右值并发现引用折叠。
+* Item 29:假设移动操作是不存的，不廉价的，不能用的
+有人争论，移动语义是 C++11 最重要的特性。“现在移动容器就像拷贝几个指针一样廉价！”你可能会听到过这个，
+“拷贝临时对象现在很高效，避免拷贝临时对象的代码相当于过早优化（premature optimization）！”这样的观点很容易理解。移动语义的确是个很重要的特性。
+它不只是允许编译器用相对廉价的移动来代替昂贵的拷贝操作，它实际上是要求编译器这样做（当满足条件时）。在你 C++98 的旧代码基础上，
+用适应 C++11 的编译器和 C++11 标准库重新编译，然后——释放洪荒之力——你的程序就变快了。
+
+移动语义真的可以办到那事情，而那授予了这特性传奇般的光环。但是呢，传奇，一般都是被夸出来的。本条款的目的就是为了让你认清现实。
+
+让我们从观察那些不支持移动的类型开始吧。因为 C++11 支持移动操作，而移动比拷贝快，所以 C++98 标准库被大改过，这些标准库的实现利用了移动操作的优势，
+但是你的旧代码没有为 C++11 而改过啊。对于在你应用里（或在你使用的库里）的一些类型，并没有为 C++11 进行过改动，
+所以编译器支持的移动操作对你这些类型可能一点帮助都没有。是的，C++11 愿意为缺乏它们的类生成移动操作，
+但那只会发生在没有声明拷贝操作、移动操作、析构函数的类中（看条款 17）。如果成员变量或基类禁止移动（例如，删除移动操作——看条款 11），
+也会以致编译器生成移动操作。对于不是显式支持移动操作和没有资格让编译器生成移动操作的类型，没有理由期望 C++11 的性能比 C++98 好。
+
+就算一些类型显式支持移动操作，它们也没有你想象中那样有益。例如，C++所有的容器都支持移动操作，但认为移动所有容器都是廉价的观点是错误的。
+这是因为，对于一些容器，移动它们的内容真心不廉价；而对于另外的容器，它们提供的廉价移动操作在元素不满足条件时会发出警告。
+
+看下 *std::array，C++11* 的一个新容器。std::array 本质上是个拥有 STL 接口的内置数组，它与其它标准容器不同，其它容器都把它的内容存储在堆上。
+这种容器类型（不同于 std::array 的容器）的对象，在概念上，只持有一个指针（作为成员变量），指向存储容器内容的堆内存。
+（实际情况更复杂，但为了这里的分析，区别不是很重要。）这个指针的存在使得用常量时间移动一个容器的内容成为可能：
+把指向容器内容的指针从源容器拷贝到目的容器，然后把源指针设置为空：
+
+#+BEGIN_SRC C++
+  std::vector<Widget> vw1;
+  // put data into vw1
+  …
+  // move vw1 into vw2. Runs in
+  // constant time. Only ptrs
+  // in vw1 and vw2 are modified
+  auto vw2 = std::move(vw1);
+#+END_SRC
+#+DOWNLOADED: /tmp/screenshot.png @ 2018-01-09 11:48:05
+[[file:C++ Ep12:Rvalue References,Move Semantics,and Perfect Forwarding(4)/screenshot_2018-01-09_11-48-05.png]]
+std::array 缺少这样的指针，因为 std::array 存储的数据直接存储在 std::array 对象中：
+
+#+BEGIN_SRC C++
+  std::array<Widget, 10000> aw1;
+  // put data into aw1
+  …
+  // move aw1 into aw2. Runs in
+  // linear time. All elements in
+  // aw1 are moved into aw2
+  auto aw2 = std::move(aw1);
+#+END_SRC
+#+DOWNLOADED: /tmp/screenshot.png @ 2018-01-09 11:50:32
+[[file:C++ Ep12:Rvalue References,Move Semantics,and Perfect Forwarding(4)/screenshot_2018-01-09_11-50-32.png]]
+请注意，aw1 中所有的元素都被移动到 aw2。假设 Widget 类型的移动操作比拷贝操作快，那么移动一个元素为 Widget 类型的 std::array 将比拷贝它要快，
+所以 std::array 肯定支持移动操作。移动和拷贝一个 std::array 都需要线性时间的计算复杂度，因为容器中的每个元素都需要被移动或拷贝，
+这和我们听到的“现在移动一个容器就像拷贝几个指针一样廉价”的宣言相差很远啊。
+
+另一方面，std::string 提供常量时间的移动和线性时间的拷贝。
+听起来，移动比拷贝快，但实际上不是这样的。许多 string 的实现都使用了 *small string optimization(SSO)* ，通过 SSO，
+“small”string（例如，那些容量不超过 15 字符的 string）会被存储到 std::string 对象内的一个缓冲区中；不需要使用堆分配的策略。
+移动一个基于 SSO 实现的 small string 不比拷贝它快，因为一般的移动操作拷贝单个指针的把戏在这里不适用。
+
+SSO 存在的动机是：有大量证据表明在大多数应用中普遍使用短字符串。使用内部缓冲区存储 string 的内容可以消除动态分配内存的需求，
+而这通常赢得效率。但是，这个实现移动不比拷贝快，也可以反过来说，对于这种 string，拷贝不比移动慢。
+
+尽管一些类型支持快速的移动操作，但是一些看似一定会使用移动的场合最终使用了拷贝。条款 14 解释过标准库一些容器操作提供异常安全保证，
+然后为了确保 C++98 旧代码依赖的保证不会因程序提升到 C++11 而被打破，只有当移动操作不抛异常时，才会把内部的拷贝当作替换成移动操作。
+结果就是：即使一个类提供移动操作，这个移动操作相对拷贝操作高效很多，即使在代码的某个位置，移动操作是合适的（例如，源对象是个右值），
+编译器可能仍然会使用拷贝操作，因为它对应的移动操作没有声明为 noexcept。
+
+因此在下面几种情况下，C++11 的移动语义对你没好处：
++ 没有移动操作。需要被移动的对象拒绝提供移动操作，结果是移动请求会变成拷贝请求。
++ 移动的速度不快。需要被移动的对象有移动操作，但是不比拷贝操作快。
++ 不能使用移动操作。在一些进行移动操作的上下文中，要求移动操作不能发出异常，但移动操作没有被声明为 noexcept。
+还有一种情况，移动语义不会提升性能，在这里也值得被提起：
++ 源对象是个左值。只有右值才有可能作为移动操作的源对象，除去极少数例外。
+
+不过， _本条款的标题是假设移动操作是不存在的、不廉价的、不能用的。这指的是在通用代码的通常情况下，例如，当写模板的时候，因为你不知道该模板为哪些类型工作_ 。
+在这种情况下，你必须像 C++98 那样（在移动语义出现之前）保守地拷贝对象。这也适用于“不稳固”的代码中，即被使用的类的特性会相对频繁改动的代码。
+
+但是，你经常会知道代码使用的类型，然后你可以依赖它们不会改动的特性（例如，它们是否会支持不昂贵的移动操作）。当在这种情况下，你不需要做这个假设，
+你可以简单地查询你使用的类的移动细节。如果那些类提供廉价的移动操作，然后你使用的对象又在可以调用移动操作的语境，你可以安全地依赖移动语义，
+用开销更小的移动操作替换掉拷贝操作。
+** 记住
++ 假设移动操作是不存在的、不廉价的、不能用的。
++ 在知道类型或支持移动语义的代码中，不需要这个假设
+* 参考
+  原文：effective-modern-c++

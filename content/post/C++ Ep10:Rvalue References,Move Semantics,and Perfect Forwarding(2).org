@@ -1,0 +1,525 @@
+#+TITLE: C++ Ep10:Rvalue References,Move Semantics,and Perfect Forwarding(2)
+#+DATE: 2018-01-04
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++ 
+#+CATEGORIES: Modern C++
+
+* Item 25:对右值引用使用 std::move，对 universal 引用则使用 std::forward
+右值引用只能绑定那些有资格被 move 的对象上去。如果你有一个右值引用类型的参数，你就知道这个被绑定的对象可以被 move：
+
+#+BEGIN_SRC C++
+  class Widget {
+	  Widget(Widget&& rhs); // rhs definitely refers to an
+	  … // object eligible for moving
+  };
+#+END_SRC
+在这种情况下，你会想传这样一个对象给其他函数，来允许这些函数能利用对象的右值属性。为了达到这样的目的，需要把绑定到这些对象的参数转换成右值。
+就像 Item 23 解释的那样，std::move 不仅是这么做了，它就是为了这个目的而被创造出来的：
+#+HTML: <!-- more -->
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  Widget(Widget&& rhs) // rhs is rvalue reference
+		  : name(std::move(rhs.name)),
+			p(std::move(rhs.p))
+		  { … }
+	  …
+	  private:
+	  std::string name;
+	  std::shared_ptr<SomeDataStructure> p;
+  };
+#+END_SRC
+在另一方面，一个 universal 引用可能被绑定到一个有资格被 move 的对象上去。universal 引用只在它由右值初始化的时候需要被转换成一个右值。
+Item 23 解释了这就是 std::forward 具体做的事情：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  template<typename T>
+	  void setName(T&& newName) // newName is
+		  { name = std::forward<T>(newName); } // universal reference
+	  …
+  };
+#+END_SRC
+总之，因为右值引用总是被绑定到右值，所以当它们被转发给别的函数的时候，应该被无条件地转换成右值（通过 std::move），
+而 universal 引用由于只是不定时地被绑定到右值，所以当转发它们时，它们应该被有条件地转换成右值（通过 std::forward）。
+
+Item 23 解释了对右值引用使用 std::forward 能让它显示出正确的行为，但是源代码会因此变得冗长、易错、不符合习惯的，
+所以你应该避免对右值引用使用 std::forward。对 universal 引用使用 std::move 是更加糟糕的想法，因为这样会对左值（比如，局部变量）产生非预期的修改：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  template<typename T>
+	  void setName(T&& newName) // universal reference
+		  { name = std::move(newName); } // compiles, but is
+	  … // bad, bad, bad!
+	  private:
+	  std::string name;
+	  std::shared_ptr<SomeDataStructure> p;
+  };
+  std::string getWidgetName(); // factory function
+  Widget w;
+  auto n = getWidgetName(); // n is local variable
+  w.setName(n); // moves n into w!
+  … // n's value now unknown
+#+END_SRC
+这里，局部变量 n 被传给 w.setName，调用者完全可以假设这是一个对 n 只读的操作。但是因为 setName 在内部会用了 std::move，
+然后无条件地将他的引用参数转换成了右值，所以 n 的值将被 move 到 w.name 中去，最后在 setName 调用完成之后，n 将成为一个未知的值。
+这样的行为会让调用者很沮丧，甚至会气得砸键盘！
+
+你可能指出 stdName 不应该声明它的参数为 universal 引用。虽然这样的引用不能是 const 的（看 Item 24），但是 steName 确实不应该修改它的参数。
+你还可能指出如果 setName 使用 const 左值和右值进行重载，整个问题将被避免。像是这样：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  void setName(const std::string& newName) // set from
+		  { name = newName; } // const lvalue
+	  void setName(std::string&& newName) // set from
+		  { name = std::move(newName); } // rvalue
+	  …
+  };
+#+END_SRC
+在这种情况下，确实能工作，但是这种方法是有缺点的。首先，它增加了源代码里要编写以及维护的代码量（使用两个函数代替一个简单的模板）。
+其次，它更加低效。举个例子，考虑这个 setName 的使用：
+
+#+BEGIN_SRC C++
+  w.setName("Adela Novak");
+#+END_SRC
+使用 universal 引用版本的 setName，在“Adela Novak”字符串被传给 setName 时，它会被转发给处于 w 对象中的一个 std::string（就是 w.name）的
+operator=函数。因此，w 的 name 数据成员将是用字符串直接赋值的；没有出现一个临时的 std::string 对象。然而，使用重载版本的 setName，
+为了让 setName 的参数能绑定上去，一个临时的 std::string 对象将被创建，然后这个临时的 std::string 对象将被移动到 w 的数据成员中去。
+因此这个 setName 的调用需要执行一次 std::string 的构造函数（为了创建临时对象），一个 std::string 的 move operator=
+（为了 move newName 到 w.name 中去），以及一个 std::string 的析构函数（为了销毁临时对象）。
+对于 const char 指针来说，比起只调用 std::string 的 operator=，上面这些函数就是多花的代价。
+额外的代价有可能随着实现的不同而产生变化，并且代价是否值得考虑也将随着应用和函数库的不同而产生变化。
+不管怎么说，事实就是，在一些情况下，使用一对重载了左值和右值的函数来替换带 universal 引用参数的函数模板有可能增加运行期的代价。
+如果我们推广这个例子，使得 Widget 的数据成员可以是任意类型的（不仅仅是熟知的 std::string），性能的落差将更大，
+因为不是所有类型的 move 操作都和 std::string 一样便宜的（看 Item 29）。
+
+然而，关于重载左值和右值最关键的问题不在于源代码的体积和使用习惯，也不在于执行期的效率。而在于它是一种可扩展性很差的设计。
+Widget::setName 只携带一个参数，所以只需要两个重载，但是对于一些携带更多参数的函数，而且每个参数都可以是左值或右值，
+那么需要重载的数量就成几何增长了：n 个参数需要 2^n 个重载。并且这还不是最糟糕的。一些函数---函数模板---携带不确定数量的参数，
+每个参数可以是左值或右值。这种函数的代表人物就是 std::make_shared，以及 C++14 中的 std::make_unique（看 Item 21）。
+看一下它们最常见的声明式：
+#+BEGIN_SRC C++
+  template<class T, class... Args> // from C++11
+  shared_ptr<T> make_shared(Args&&... args); // Standard
+  template<class T, class... Args> // from C++14
+  unique_ptr<T> make_unique(Args&&... args); // Standard
+#+END_SRC
+对于这样的函数，重载左值和右值的方法不适用了，所以 universal 引用成为了唯一的解决方案。并且我可以向你保证，在这些函数内部，
+当 universal 引用被传给别的函数的时候，使用的是 std::forward。这也是你应该做的事情。
+
+刚开始接触这些的时候不是很有必要，但是最终，你总能碰到在一些情况，对于被绑定到右值引用或 universal 的引用的对象，
+你将在一个函数中使用它们超过一次，而且你想确保在你使用完它们之前，它们不会被 move 走。对于这种情况，
+你可以只在最后一次使用这些引用的时候加上 std::move（对于右值引用）或 std::forward（对于 universal 引用）。举个例子：
+
+#+BEGIN_SRC C++
+  template<typename T> // text is
+  void setSignText(T&& text) // univ. reference
+  {
+	  sign.setText(text); // use text, but
+  // don't modify it
+	  auto now = // get current time
+		  std::chrono::system_clock::now();
+	  signHistory.add(now,
+					  std::forward<T>(text)); // conditionally cast
+  }
+#+END_SRC
+这里，我们想要确保 text 的值没有被 sign.setText 改变。因为我们在调用 signHistory.add 的时候还想要使用这个值。
+因此只在最后使用 universal 引用的时候才对其使用 std::forward。
+
+对于 std::move，概念是相同的（也就是，只在最后使用右值引用的时候才对其运用 std::move），但是我们有必要注意一个不寻常的情况，
+这种情况下你将会调用 std::move_if_noexcept 来代替 std::move。想知道什么时候以及为什么，请看 Item 14。
+
+如果在一个返回值是传值（by-value）的函数中，你想返回一个对象，而且这个对象被绑定到一个右值引用或 universal 引用上去了，
+那么当你返回引用的时候，你会想对其使用 std::move 或 std::forward。为了说明这种情况，考虑一个 operator+函数，
+它把两个矩形加在一起，左边的矩阵是一个右值（因此我们可以让它的内存空间用来存放矩阵的和）：
+
+#+BEGIN_SRC C++
+  Matrix // by-value return
+  operator+(Matrix&& lhs, const Matrix& rhs)
+  {
+	  lhs += rhs;
+	  return std::move(lhs); // move lhs into
+  }
+#+END_SRC
+过在返回语句中把 lhs 转换为一个右值（通过 std::move），lhs 将被 move 到函数的返回值所在的内存区域。如果不调用 std::move，
+
+#+BEGIN_SRC C++
+  Matrix // as above
+  operator+(Matrix&& lhs, const Matrix& rhs)
+  {
+	  lhs += rhs;
+	  return lhs; // copy lhs into
+  } // return value
+#+END_SRC
+这样的话，lhs 是一个左值，并且将强制编译器把它的值拷贝到返回值所在的内存区域。假设 Matrix 类型支持 move 操作，
+而 move 操作又比拷贝操作更加高效，所以使用在返回语句中 std::move 将产生更高效的代码。
+
+如果 Matrix 不支持 move 操作，把它转换成右值不会造成什么麻烦，因为右值将简单地通过拷贝构造函数被拷贝过去（看 Item 23）。
+如果 Matrix 之后被修改，因而能支持 move 操作了，operator+在下一次编译过后将自动提升它的效率。这就是我要说的情况了，当函数通过是传值返回时，
+通过使用 std::move 把要返回的值转换成右值，我们将不会损失任何东西（却有可能得到很多）。
+
+这种情况同 universal 引用和 std::forward 是相似的。考虑一个函数模板 reduceAndCopy，它可能以一个未 reduce 的 Fraction 对象作为参数，
+在函数中 reduce 它，然后返回一个 reduce 过后的拷贝值。如果源对象是一个右值，它的值应该被 move 到返回值中（因此避免了一次拷贝的代价），
+但是如果源对象是一个左值，一个拷贝值将被创建。因此：
+
+#+BEGIN_SRC C++
+  Hence:
+  template<typename T>
+  Fraction // by-value return
+  reduceAndCopy(T&& frac) // universal reference param
+  {
+	  frac.reduce();
+	  return std::forward<T>(frac); // move rvalue into return
+  } // value, copy lvalue
+#+END_SRC
+如果不使用 std::forward 调用，frac 将被无条件地拷贝到 reduceAndCopy 的返回值中去。
+
+一些程序员吸收了上面的知识后会尝试着去把它扩展到别的情况中去，但是在这些情况下是不该这么做的。
+“如果对一个要被拷贝到返回值中去的右值引用参数使用 std::move，能把 copy 构造函数转换成 move 构造函数，
+”他们就会推断，“那么我能对将被返回的局部变量执行同样的优化。”总之，他们认为，如果给出的函数返回一个传值的局部变量，比如这样：
+
+#+BEGIN_SRC C++
+  Widget makeWidget() // "Copying" version of makeWidget
+  {
+	  Widget w; // local variable
+	  … // configure w
+		  return w; // "copy" w into return value
+  }
+#+END_SRC
+他们就能通过把“拷贝”转换成 move 来“优化”它：
+#+BEGIN_SRC C++
+  Widget makeWidget() // Moving version of makeWidget
+  {
+	  Widget w;
+	  …
+		  return std::move(w); // move w into return value
+  } // (don't do this!)
+#+END_SRC
+
+我慷慨的注释应该已经提示你这个推理过程是有问题的。但是它为什么有问题呢？
+
+这是因为，对于这种优化，C++标准委员会早在这些程序员之前就提出了。很早以前大家都公认的一件事：makeWidgetde “拷贝”版本能避免拷贝局部变量 w，
+只需要通过在内存中构造它并分配给函数的返回值即可。这就是大家熟知的 *RVO* （return value optimization，返回值优化），因为标准中已经有一个了，
+所以它被 C++的标准明文保护了。
+
+规定这样一个保护是很繁琐的工作，因为你只想要在不会影响到软件的行为时才允许这样消除拷贝。把标准中原有的规则进行改写之后，这个特别的保护告诉我们，
+在返回值是传值的函数中，只要你做到：(1)局部对象的类型和函数返回值的类型一样（2）这个局部对象将被返回，编译器就有可能消除一个局部对象的拷贝（或 move）。
+带着这些条件，让我们看一下 makeWidget 的“拷贝”版本：
+
+#+BEGIN_SRC C++
+  Widget makeWidget() // "Copying" version of makeWidget
+  {
+	  Widget w;
+	  …
+		  return w; // "copy" w into return value
+  }
+#+END_SRC
+两个条件在这里都满足了，所以请相信我，对于这段代码，每个正常的 C++编译器都会使用 RVO 来避免 w 的拷贝。
+这意味着 makeWidget 的“拷贝”版本事实上不会拷贝任何东西。
+
+makeWidget 的 move 版本只做它名字所说的东西（假设 Widget 提供一个 move 构造函数）：它把 w 的内容 move 到 makeWidget 的返回值所在的内存中去。
+但是为什么比编译器不使用 RVO 来消除 move 操作，在内存中构造一个 w 分配给函数的返回值的呢？回答很简单：它们不能这么做。
+情况（2）规定了 RVO 只有在返回的值是局部对象时才执行，但是 makeWidget 的 move 版本不是这么做的。再看一下它的返回语句：
+
+#+BEGIN_SRC C++
+  return std::move(w);
+#+END_SRC
+这里返回的不是局部对象 w，它是一个 w 的引用---std::move(w)的返回值。返回一个局部对象的引用不能满足 RVO 的条件要求，
+所以编译器必须把 w move 到函数的返回值所在的内存中去。开发者试图对将要返回的局部变量调用 std::move，来帮助他们的编译器进行优化，
+但是这恰恰限制了他们的编译器的优化能力！
+
+但是 RVO 只是一个优化。甚至当他们被允许这么做时，编译器也不是一定要消除拷贝和 move 操作的。可能你有点强迫症，
+并且你担心你的编译器会用拷贝操作惩罚你，只是因为它们能这么做。或者也许你有足够的知识能够知道，一些情况下的 RVO 对于编译器来说是很难实现的，
+比如，在一个函数中，不同的控制路径返回不同的局部变量。（编译器将必须产生相应的代码，在内存中构造合适的局部变量分配给函数的返回值，
+但是编译器怎么知道哪个局部变量是合适的呢？）如果这样，你可能愿意付出 move 的代价来保证不会产生拷贝所需的花费。也就是说，
+因为你知道你永远不需要付出拷贝的代价，所以你可能还是觉得，把 std::move 用在你要返回的局部对象上是合理的。
+
+在这种情况下，把 std::move 用在局部对象上还是一个糟糕的注意。标准中关于 RVO 的部分还说到，碰到能进行 RVO 优化的情况，如果编译器选择不去消除拷贝，
+则被返回的对象必须被视为一个右值。实际上，C++标准要求当 RVO 被允许时，要么消除拷贝，要么隐式地把 std::move 用在要返回的局部对象上去。
+所以在 makeWidget 的“拷贝”版本中，
+
+#+BEGIN_SRC C++
+  Widget makeWidget() // as before
+  {
+	  Widget w;
+	  …
+		  return w;
+  }
+#+END_SRC
+编译器必须要么消除掉 w 的拷贝，要么把函数看成这样子：
+
+#+BEGIN_SRC C++
+  Widget makeWidget()
+  {
+	  Widget w;
+	  …
+		  return std::move(w); // treat w as rvalue, because
+  } // no copy elision was performed
+#+END_SRC
+这种情况和函数参数是传值的情况是一样的。对于这些函数的返回值而言，它们不符合消除拷贝的条件，但是如果它们被返回，
+编译器必须把它们视为右值。如果源代码看起来像是这样：
+
+#+BEGIN_SRC C++
+  Widget makeWidget(Widget w) // by-value parameter of same
+  { // type as function's return
+	  …
+		  return w;
+  }
+#+END_SRC
+编译器必须把函数视为这样：
+
+#+BEGIN_SRC C++
+  Widget makeWidget(Widget w)
+  {
+	  …
+		  return std::move(w); // treat w as rvalue
+  }
+#+END_SRC
+这意味着，在一个返回值是传值的函数中，如果你对一个要返回的局部对象使用 std::move，那么你不会帮到你的编译器
+（如果它们不消除拷贝的话，它们必须把局部对象视为右值），但是你肯定有可能阻碍它们的优化（阻碍了 RVO 优化）。
+当把 std::move 用在局部变量时，有几种情况是比较合理的（也就是，当你把它传给一个函数，并且你知道你不会再使用这个变量时），
+但是在有资格进行 RVO 优化或者返回一个传值参数的返回语句中，它（调用 std::move）是不适用的。
+** 记住
++ 在最后一次使用时，再把 std::move 用在右值引用上，把 std::forward 用在 universal 引用上。
++ 在一个返回值是传值的函数，对于要被返回的右值引用和 universal 引用做同样的事情（把 std::move 用在右值引用上，把 std::forward 用在 universal 引用上）。
++ 如果局部变量有资格进行 RVO 优化，不要把 std::move 或 std::forward 用在这些局部变量中。
+* Item 26:避免对 universal 引用进行重载
+如果你需要写一个以名字作为参数，并记录下当前日期和时间的函数，在函数中还要把名字添加到全局的数据结构中去的话。
+你可能会想出看起来像这样的一个函数：
+
+#+BEGIN_SRC C++
+  std::multiset<std::string> names; // global data structure
+  void logAndAdd(const std::string& name)
+  {
+	  auto now = // get current time
+		  std::chrono::system_clock::now();
+	  log(now, "logAndAdd"); // make log entry
+	  names.emplace(name); // add name to global data
+  } // structure; see Item 42
+  // for info on emplace
+#+END_SRC
+这段代码并非不合理，只是它可以变得更加有效率。考虑三个可能的调用：
+
+#+BEGIN_SRC C++
+  std::string petName("Darla");
+  logAndAdd(petName); // pass lvalue std::string
+  logAndAdd(std::string("Persephone")); // pass rvalue std::string
+  logAndAdd("Patty Dog"); // pass string literal
+#+END_SRC
+在第一个调用中，logAndAdd 的参数 name 被绑定到 petName 变量上了。在 logAndAdd 中，
+name 最后被传给 names.emplace。因为 name 是一个左值，它是被拷贝到 names 中去的。
+因为被传入 logAndAdd 的是左值（petName），所以我们没有办法避免这个拷贝。
+
+在第二个调用中，name 参数被绑定到一个右值上了（由“Persephone”字符串显式创建的临时变量---std::string）。
+name 本身是一个左值，所以它是被拷贝到 names 中去的，但是我们知道，从原则上来说，它的值能被 move 到 names 中。
+在这个调用中，我们多做了一次拷贝，但是我们本应该通过一个 move 来实现的。
+
+在第三个调用中，name 参数再一次被绑定到了一个右值上，但是这次是由“Patty Dog”字符串隐式创建的临时变量---std::string。
+就和第二种调用一样，name 试被拷贝到 names 中去的，但是在这种情况下，被传给 logAndAdd 原始参数是字符串。
+如果把字符串直接传给 emplace 的话，我们就不需要创建一个 std::string 临时变量了。取而代之，在 std::multiset 内部，
+emplace 将直接使用字符串来创建 std::string 对象。在第三种调用中，我们需要付出拷贝一个 std::string 的代价，
+但是我们甚至真的没理由去付出一次 move 的代价，更别说是一次拷贝了。
+
+我们能通过重写 logAndAdd 来消除第二个以及第三个调用的低效性。我们使 logAndAdd 以一个 universal 引用（看 Item24）
+为参数，并且根据 Item 25，再把这个引用 std::forward（转发）给 emplace。结果就是下面的代码了：
+
+#+BEGIN_SRC C++
+  template<typename T>
+  void logAndAdd(T&& name)
+  {
+	  auto now = std::chrono::system_clock::now();
+	  log(now, "logAndAdd");
+	  names.emplace(std::forward<T>(name));
+  }
+  std::string petName("Darla"); // as before
+  logAndAdd(petName); // as before, copy
+  // lvalue into multiset
+  logAndAdd(std::string("Persephone")); // move rvalue instead
+  // of copying it
+  logAndAdd("Patty Dog"); // create std::string
+  // in multiset instead
+  // of copying a temporary
+  // std::string
+#+END_SRC
+
+如果这是故事的结尾，我能就此打住很自豪地离开了，但是我还没告诉你客户端并不是总能直接访问 logAndAdd 所需要的 name。
+一些客户端只有一个索引值，这个索引值可以让 logAndAdd 用来在表中查找相应的 name。
+为了支持这样的客户端，logAndAdd 被重载了：
+
+#+BEGIN_SRC C++
+  std::string nameFromIdx(int idx); // return name
+  // corresponding to idx
+  void logAndAdd(int idx) // new overload
+  {
+	  auto now = std::chrono::system_clock::now();
+	  log(now, "logAndAdd");
+	  names.emplace(nameFromIdx(idx));
+  }
+#+END_SRC
+对于两个重载版本的函数，调用的决议（决定调用哪个函数）结果就同我们所期待的一样：
+
+#+BEGIN_SRC C++
+  std::string petName("Darla"); // as before
+  logAndAdd(petName); // as before, these
+  logAndAdd(std::string("Persephone")); // calls all invoke
+  logAndAdd("Patty Dog"); // the T&& overload
+  logAndAdd(22); // calls int overload
+#+END_SRC
+事实上，决议结果能符合期待只有当你不期待太多时才行。假设一个客户端有一个 short 类型的索引，并把它传给了 logAndAdd：
+
+#+BEGIN_SRC C++
+  short nameIdx;
+  … // give nameIdx a value
+  logAndAdd(nameIdx); // error!
+#+END_SRC
+最后一行的注释不是很明确，所以让我来解释一下这里发生了什么。
+
+这里有两个版本的 logAndAdd。一个版本以 universal 引用为参数，它的 T 能被推导为 short，因此产生了一个确切的匹配。
+以 int 为参数的版本只有在一次提升转换（译注：也就是类型转换，从小精度数据转换为高精度数据类型）后才能匹配成功。
+按照正常的重载函数决议规则，一个确切的匹配击败了需要提升转换的匹配，所以 universal 引用重载被调用了。
+
+在这个重载中，name 参数被绑定到了传入的 short 值。因此 name 就被 std::forwarded 到 names
+（一个 std::multiset<std::string>）的 emplace 成员函数,然后在内部又把 name 转发给 std::string 的构造函数。
+但是 std::string 没有一个以 short 为参数的构造函数，所以在 logAndAdd 调用中的 multiset::emplace
+调用中的 std::string 构造函数的调用失败了。这都是因为比起 int 版本的重载，universal
+引用版本的重载是 short 参数更好的匹配。
+
+在 C++中，以 universal 引用为参数的函数是最贪婪的函数。它们能实例化出大多数任何类型参数的准确匹配。
+（它无法匹配的一小部分类型将在 Item 30 中描述。）这就是为什么把重载和 universal 引用结合起来使用是个糟糕的想法
+：比起开发者通常所能预想到的，universal 引用版本的重载使得参数类型失效的数量要多很多。
+
+一个简单的让事情变复杂的办法就是写一个完美转发的构造函数。一个对 logAndAdd 例子中的小改动能说明这个问题。
+比起写一个以 std::string 或索引（能用来查看一个 std::string）为参数的函数，我们不如写一个能做同样事情的 Person 类：
+
+#+BEGIN_SRC C++
+  class Person {
+  public:
+	  template<typename T>
+	  explicit Person(T&& n) // perfect forwarding ctor;
+		  : name(std::forward<T>(n)) {} // initializes data member
+	  explicit Person(int idx) // int ctor
+		  : name(nameFromIdx(idx)) {}
+	  …
+	  private:
+	  std::string name;
+  };
+#+END_SRC
+就和 logAndAdd 中的情况一样，传一个除了 int 外的整形类型（比如，std::size_t, short, long）
+将不会调用 int 版本的构造函数，而是调用 universal 引用版本的构造函数，然后这将导致编译失败。
+但是这里的问题更加糟糕，因为除了我们能看到的以外，这里还有别的重载出现在 Person 中。Item 17 解释了在适当的条件下，
+C++将同时产生拷贝和 move 构造函数，即使类中包含一个能实例化出同拷贝或 move 构造函数同样函数签名的模板构造函数，
+它还是会这么做。因此，如果 Person 的拷贝和 move 构造函数被产生出来了，Person 实际上看起来应该像是这样：
+
+#+BEGIN_SRC C++
+  class Person {
+  public:
+	  template<typename T> // perfect forwarding ctor
+	  explicit Person(T&& n)
+		  : name(std::forward<T>(n)) {}
+	  explicit Person(int idx); // int ctor
+	  Person(const Person& rhs); // copy ctor
+  // (compiler-generated)
+	  Person(Person&& rhs); // move ctor
+	  … // (compiler-generated)
+  };
+#+END_SRC
+只有你花了大量的时间在编译期和写编译器上，你才会忘记以人类的想法去思考这个问题，知道这将导致一个很直观的行为：
+
+#+BEGIN_SRC C++
+  Person p("Nancy");
+  auto cloneOfP(p); // create new Person from p;
+  // this won't compile!
+#+END_SRC
+在这里我们试着从另外一个 Person 创建一个 Person，这看起来就拷贝构造函数的情况是一样的。
+（p 是一个左值，所以我们能不去考虑“拷贝”可能通过 move 操作来完成）。但是这段代码不能调用拷贝构造函数。
+它将调用完美转发构造函数。然后这个函数将试着用一个 Person 对象（p）来初始化 Person 的 std::string 数据成员。
+std::string 没有以 Person 为参数的构造函数，因此你的编译器将愤怒地举手投降，
+可能会用一大串无法理解的错误消息来表达他们的不快。
+
+“为什么？”你可能很奇怪，“难道完美转发构造函数取代拷贝构造函数被调用了？可是我们在用另外一个
+Person 来初始化这个 Person 啊！”。我们确实是这么做的，但是编译器却是誓死维护 C++规则的，
+然后和这里相关的规则是对于重载函数，应该调用哪个函数的规则。
+
+编译器的理由如下：cloneOfP 被用一个非 const 左值（p）初始化，
+并且这意味着模板化的构造函数能实例化出一个以非 const 左值类型为参数的 Person 构造函数。
+在这个实例化过后，Person 类看起来像这样：
+
+#+BEGIN_SRC C++
+  class Person {
+  public:
+	  explicit Person(Person& n) // instantiated from
+		  : name(std::forward<Person&>(n)) {} // perfect-forwarding
+  // template
+	  explicit Person(int idx); // as before
+	  Person(const Person& rhs); // copy ctor
+	  … // (compiler-generated)
+  };
+#+END_SRC
+在语句
+
+#+BEGIN_SRC C++
+  auto cloneOfP(p);
+#+END_SRC
+中，p 既能被传给拷贝构造函数也能被传给实例化的模板。调用拷贝构造函数将需要把
+const 加到 p 上去来匹配拷贝构造函数的参数类型，但是调用实例化的模板不需要这样的条件。
+因此产生自模板的版本是更佳的匹配，所以编译器做了它们该做的事：调用更匹配的函数
+。因此，“拷贝”一个 Person 类型的非 const 左值会被完美转发构造函数处理，而不是拷贝构造函数。
+
+如果我们稍微改变一下例子，使得要被拷贝的对象是 const 的，我们将得到一个完全不同的结果：
+
+#+BEGIN_SRC C++
+  const Person cp("Nancy"); // object is now const
+  auto cloneOfP(cp); // calls copy constructor!
+#+END_SRC
+因为被拷贝的对象现在是 const 的，它完全匹配上拷贝构造函数的参数。模板化的构造函数能被实例化成有同样签名的函数，
+
+#+BEGIN_SRC C++
+  class Person {
+  public:
+	  explicit Person(const Person& n); // instantiated from
+  // template
+	  Person(const Person& rhs); // copy ctor
+  // (compiler-generated)
+	  …
+  };
+#+END_SRC
+但是这不要紧，因为 C++的“重载决议”规则中有一条就是当模板实例和一个非模板函数（也就是一个“正常的”函数）
+都能很好地匹配一个函数调用时，正常的函数是更好的选择。因此拷贝构造函数（一个正常的函数）用相同的函数签名打败了被实例化的模板。
+
+（如果你好奇为什么当编译器能用模板构造函数实例化出同拷贝构造函数一样的签名时，它们还是会产生一个拷贝构造函数，请复习 Item 17。）
+
+当继承介入其中时，完美转发构造函数、编译器产生的拷贝和 move 构造函数之间的关系将变得更加扭曲。
+尤其是传统的派生类对于拷贝和 move 操作的实现将变得很奇怪，让我们来看一下：
+
+#+BEGIN_SRC C++
+  class SpecialPerson: public Person {
+  public:
+	  SpecialPerson(const SpecialPerson& rhs) // copy ctor; calls
+		  : Person(rhs) // base class
+		  { … } // forwarding ctor!
+	  SpecialPerson(SpecialPerson&& rhs) // move ctor; calls
+		  : Person(std::move(rhs)) // base class
+		  { … } // forwarding ctor!
+  };
+#+END_SRC
+就像注释标明的那样，派生的类拷贝和 move 构造函数没有调用基类的拷贝和 move 构造函数，
+它们调用基类的完美转发构造函数！为了理解为什么，注意派生类函数传给基类的参数类型是 SpecialPerson 类型，
+然后产生了一个模板实例，这个模板实例成为了 Person 类构造函数的重载决议结果。最后，代码无法编译，
+因为 std::string 构造函数没有以 SpecialPerson 为参数的版本。
+
+我希望现在我已经让你确信，对于 universal 引用参数进行重载是你应该尽可能去避免的事情。
+但是如果重载 universal 引用是一个糟糕的想法的话，那么如果你需要一个函数来转发不同的参数类型，
+并且需要对一小部分的参数类型做特殊的事情，你该怎么做呢？事实上这里有很多方式来完成这件事，
+我将花一整个 Item 来讲解它们，就在 Item 27 中。下一章就是了，继续读下去，你会碰到的。
+** 记住
++ 重载 universal 引用常常导致 universal 引用版本的重载被调用的频率超过你的预期。
++ 完美转发构造函数是最有问题的，因为比起非 const 左值，它们常常是更好的匹配，并且它们会劫持派生类调用基类的拷贝和 move 构造函数。
+* 参考
+原文：effective-modern-c++
+翻译：http://www.cnblogs.com/boydfd/

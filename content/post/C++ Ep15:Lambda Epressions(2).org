@@ -1,0 +1,393 @@
+#+TITLE: C++ Ep15:Lambda Epressions(2)
+#+DATE: 2018-01-14
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++ 
+#+CATEGORIES: Modern C++
+
+* Item 33:对需要 std::forward 的 auto&&参数使用 decltype
+泛型 lambda(generic lambda)是 C++14 最令人兴奋的特性之一——lambda 可以在参数说明中使用 auto。这个特性的实现很直截了当：
+闭包类中的  *operator()* 函数是一个模板。例如，给定这个 lambda，
+
+#+BEGIN_SRC C++
+  auto f = [](auto x) { return func(normalize(x)); };
+#+END_SRC
+
+闭包类的函数调用操作符看起来是这样的：
+#+BEGIN_SRC C++
+  class SomeCompilerGeneratedClassName {
+  public:
+	  template<typename T> // see Item 3 for
+	  auto operator()(T x) const // auto return type
+		  { return func(normalize(x)); }
+	  … // other closure class
+  }; // functionality
+#+END_SRC
+#+HTML: <!-- more -->
+在这个例子中，lambda 对 x 做的唯一的一件事就是把它转发给 normalized。如果 normalized 区别对待左值和右值，这个 lambda 这样写是不合适的，
+因为即使传递给 lambda 的实参是个右值，lambda 总是传一个左值（形参 x）给 normalized。
+
+写这个 lambda 的正确方式是把 x 完美转发给 normalized，这样做需要在代码中修改两个地方。第一，x 要改成通用引用（看条款 24），
+第二，借助 std::forward（看条款 25）把 x 转发到 normalized。在概念上，修改成这样：
+
+#+BEGIN_SRC C++
+  auto f = [](auto&& x)
+  { return func(normalize(std::forward<???>(x))); };
+#+END_SRC
+但是，在概念和实现之间，有一个问题，就是你传递给 std::forward 的参数是什么类型，这决定了我上面写的???的地方会变成怎样。
+
+一般来说，当你使用完美转发时，你是在一个接受类型形参 T 的模板函数中，所以你只是写 std::forward<T>。而在泛型模板中，没有你可以拿到的类型参数 T。
+在 lambda 生成的闭包内，模板化 operator()函数有一个 T，但是在 lambda 中无法指定它，所以它对你没有任何帮助。
+
+条款 28 解释过如果把一个左值传递给通用引用，通用引用的类型会变为左值引用；如果把一个右值传递给通用引用，通用引用会变为一个右值引用。
+那意味着在我们的 lambda 中，我们可以通过检查 x 的类型来判断传递进来的实参是左值还是右值， *decltype* 就可以让我们这样做。
+如果传递给 lambda 的是个左值，decltype(x)将会产生一个左值引用；如果传递给 lambda 的是个右值，decltype(x)将会产生一个右值引用。
+
+条款 28 也解释了当使用 std::forward 时，有一个规则：传给它的类型参数是个左值引用时，表明返回的是个左值，传递给它的类型参数是个非引用类型时，
+表明返回的是个右值。在我们的 lambda 中，如果 x 绑定的是一个左值引用，decltype(x)将产生一个左值引用，这符合规则。
+不过，如果 x 绑定的是个右值，decltype(x)将会产生一个右值引用，而不是常规的非引用。
+（要注意的是，条款 28 中传递给 std::forward 的类型参数是 T，而在 lambda 中无法使用 T，也无法使用 auto，
+所以只能将 decltype(x)作为 std::forward 的类型参数。）
+
+但看回在条款 28 中，std::forward 的 C++14 实现：
+
+#+BEGIN_SRC C++
+  template<typename T> // in namespace
+  T&& forward(remove_reference_t<T>& param) // std
+  {
+	  return static_cast<T&&>(param);
+  }
+#+END_SRC
+如果一个用户想要完美转发一个 Widegt 类型的右值，它正常地用 Widget 类型（即非引用类型）实例化 std::forward，然后 std::forward 产生这个函数：
+
+#+BEGIN_SRC C++
+  Widget&& forward(Widget& param) // instantiation of
+  { // std::forward when
+	  return static_cast<Widget&&>(param); // T is Widget
+  }
+#+END_SRC
+不过，请思考如果用户代码想要完美转发一个 Widget 类型的右值，但是这次它没有服从规则将 T 指定为非引用类型，而是将 T 指定为右值引用，
+这会发生什么？那是，思考把 T 替换成 Widget&&将会发生什么。在 std::forward 实例化、应用了 *std::remove_reference_t* 之后，
+引用折叠（再次看条款 28，看懂！）之前，std::forward 看起来是这样的：
+
+#+BEGIN_SRC C++
+  Widget&& && forward(Widget& param) // instantiation of
+  { // std::forward when
+	  return static_cast<Widget&& &&>(param); // T is Widget&&
+  } // (before reference-
+  // collapsing)
+#+END_SRC
+如果你用这个实例化和把 T 设置为 Widget 的 std::forward 那个实例化进行比较，你会发现它们是相同的。那意味着用一个右值引用实例化 std::forward，
+和用一个非引用类型实例化 std::forward 产生的结果相同。
+
+那是个很棒的消息，因为当一个右值实参传递给 lambda 形参 x 时，decltype(x)会产生一个右值引用。我们在上面已经确认了把一个左值传给 lambda 时，
+decltype(x)会产生一个可以传给 std::forward 的常规类型，而现在我们认识到对于右值，把 decltype(x)产生的类型传递给 std::forward 的类型参数是不传统的，
+不过，它产生的结果与传统类型产生的结果相同。所以无论是左值还是右值，把 decltype(x)传递给 std::forward 都能得到我们想要的结果，
+因此我们的完美转发 lambda 可以这样写：
+
+#+BEGIN_SRC C++
+  auto f =
+	  [](auto&& param)
+  {
+	  return
+	  func(normalize(std::forward<decltype(param)>(param)));
+  };
+#+END_SRC
+在这份代码加上 6 个点，就可以让我们的完美转发 lambda 接受多个参数了，因为 C++14 的 lambda 的参数是可变的：
+
+#+BEGIN_SRC C++
+  auto f =
+	  [](auto&&... params)
+  {
+	  return
+	  func(normalize(std::forward<decltype(params)>(params)...));
+  };
+#+END_SRC
+** 记住
++ 对需要 std::forward 的 auto&&参数使用 decltype（Use decltype on auto&& parameters to std::forward them.）。
+* Item 34:优先考虑使用 lambda 而不是 std::bind
+C++11 的 std::bind 是 C++98 的 std::bind1st 和 std::bind2nd 的继承人，但是，通俗的说，std::bind 在 2005 年的时候已经是标准库的一部分了，
+那个时候标准委员会采用了名为 TR1 的文档，里面就包含 std::bind 的说明。（在 TR1 中，bind 在不同的命名空间，所以它是 std::tr1::bind，
+而不是 std::bind，接口和现在有点不同。）这个历史意味着一些开发者对 std::bind 已经有了十年的或者更多的开发经验了，如果你是他们中的一员，
+你可能不愿意放弃这个工作得好好的工具。这是可以理解的，但是在如今的情况下，作出改变是好的，因为在 C++11，比起使用 std::bind，lambda 几乎总是更好的选择。
+到了 C++14，lambda 在这种情况中不只是变强了，它还披上了装甲。
+
+该条款假设你熟悉 std::bind，如果你不熟悉，那么在继续看下去之前，你要对它有基本的认识。这种的认识在某些情况下是值得的，因为你不会知道，在哪一个时间点，
+看代码或者维护代码时遇到 std::bind。
+
+就像条款 32 所说，我 std::bind 返回的函数对象称为绑定对象（bind object）。
+
+比起 std::bind 更偏爱 lambda 的最主要原因是 lambda 的具有更好的可读性。举个例子，假设我们有个函数用来设置警报：
+
+#+BEGIN_SRC C++
+  // typedef for a point in time (see Item 9 for syntax)
+  using Time = std::chrono::steady_clock::time_point;
+  // see Item 10 for "enum class"
+  enum class Sound { Beep, Siren, Whistle };
+  // typedef for a length of time
+  using Duration = std::chrono::steady_clock::duration;
+  // at time t, make sound s for duration d
+  void setAlarm(Time t, Sound s, Duration d);
+#+END_SRC
+进一步假设，在程序的某些地方，我们想要设置在一个小时之后发出警报，持续 30 秒。但是呢，警报的类型，依然是未决定的。
+我们可以写一个修改了 setAlarm 接口的 lambda，从而只需要指定警报类型
+
+#+BEGIN_SRC C++
+  // setSoundL ("L" for "lambda") is a function object allowing a
+  // sound to be specified for a 30-sec alarm to go off an hour
+  // after it's set
+  auto setSoundL =
+	  [](Sound s)
+  {
+  // make std::chrono components available w/o qualification
+	  using namespace std::chrono;
+	  setAlarm(steady_clock::now() + hours(1), // alarm to go off
+			   s, // in an hour for
+			   seconds(30)); // 30 seconds
+  };
+#+END_SRC
+注意看 lambda 里的 setAlarm，这是一个正常的函数调用，就算只有一点 lambda 经验的读者都可以看出传递给 lambda 的参数会作为 setAlarm 的一个实参
+
+我们可以使用 C++14 对于秒(s)，毫秒(ms)，时(h)等标准后缀来简化代码，那是基于 C++11 的支持而照字面意思定义的。
+这些后缀在 *std::literals* 命名空间里实现，所以上面的代码可以写成这样：
+
+#+BEGIN_SRC C++
+  auto setSoundL =
+	  [](Sound s)
+  {
+	  using namespace std::chrono;
+	  using namespace std::literals; // for C++14 suffixes
+	  setAlarm(steady_clock::now() + 1h, // C++14, but
+			   s, // same meaning
+			   30s); // as above
+  };
+#+END_SRC
+我们第一次尝试写出对应的 std::bind 调用，代码在下面。我们在注释中说明它有个错误，但是正确的代码复杂得多，而这个简化的版本可以让我们看到重要的问题：
+
+#+BEGIN_SRC C++
+  using namespace std::chrono; // as above
+  using namespace std::literals;
+  using namespace std::placeholders; // needed for use of "_1"
+  auto setSoundB = // "B" for "bind"
+	  std::bind(setAlarm,
+				steady_clock::now() + 1h, // incorrect! see below
+				_1,
+				30s);
+#+END_SRC
+这份代码的读者简单地知道在 setSoundB 里，std::bind 会用指定时间点和持续时间来调用 setAlarm。对于缺少经验的读者，占位符“_1”简直是个魔术，
+为了理解 setSoundB 的第一个实参会传递给 setAlarm 的第二个参数，读者需要聪明地把 std::bind 参数列表上占位符的数字和它的位置进行映射。
+这个实参的类型在 std::bind 没有说明，所以读者还需要去咨询 setAlarm 的声明，来决定传递给 setSoundB 的参数类型。
+
+但是，如我所说，这代码不完全正确。在 lambda 中，很明显表达式“ *steady_clock::now() + 1h* ”是 setAlarm 的一个实参，当 setAlarm 调用时，
+表达式会被求值。那是行得通的：我们想要在调用了 setAlarm 后的一个小时触发警报。
+ _但在 std::bind 的调用中，“steady_clock::now() + 1h”作为实参传递给 std::bind，而不是 setAlarm，那意味着表达式在调用 std::bind 的时候已经被求值，那么表达式的结果时间会被存储在产生的绑定对象中_ 。
+最终，警报会在调用了 std::bind 后的一个小时触发，而不是调用 setAlarm 后的一个小时！
+
+解决这个问题需要告知 std::bind 推迟表达式的求值，直到 setAlarm 被调用，而这种办法需要在原来的 std::bind 内嵌入一个新的 std::bind：
+
+#+BEGIN_SRC C++
+  auto setSoundB =
+	  std::bind(setAlarm,
+				std::bind(std::plus<>(), steady_clock::now(), 1h),
+				_1,
+				30s);
+#+END_SRC
+如果你熟悉来自 C++98 的 std::plus，你可能会对这份代码感到惊奇，因为在两个方括号之间没有指定类型，即代码含有 *std::plus<>* ，
+而不是 std::plus<type>。在 C++14，标准操作符模板的模板类型参数可以被省略，所以这里提供类型给它。
+C++11 没有提供这种特性，所以在 C++11 中对于 lambda 的 std::bind 等同物是这样的：
+
+#+BEGIN_SRC C++
+  using namespace std::chrono; // as above
+  using namespace std::placeholders;
+  auto setSoundB =
+	  std::bind(setAlarm,
+				std::bind(std::plus<steady_clock::time_point>(),
+						  steady_clock::now(),
+						  hours(1)),
+				_1,
+				seconds(30));
+#+END_SRC
+
+如果，在现在这个时刻，lambda 的实现看起来没有吸引力的话，你可能需要去检查一下视力了。
+
+当 setAlarm 被重载，会出现一个新的问题。假如有个重载接受第四个参数来指定警报的音量：
+
+#+BEGIN_SRC C++
+  enum class Volume { Normal, Loud, LoudPlusPlus };
+  void setAlarm(Time t, Sound s, Duration d, Volume v);
+#+END_SRC
+之前那个 lambda 还会工作得很好，因为重载决策会选择带有三个参数的 setAlarm 版本：
+
+#+BEGIN_SRC C++
+  auto setSoundL = // same as before
+	  [](Sound s)
+  {
+	  using namespace std::chrono;
+	  setAlarm(steady_clock::now() + 1h, // fine, calls
+			   s, // 3-arg version
+			   30s); // of setAlarm
+  };
+#+END_SRC
+另一方面，std::bind 的调用，现在会编译失败：
+
+#+BEGIN_SRC C++
+  auto setSoundB = // error! which
+	  std::bind(setAlarm, // setAlarm?
+				std::bind(std::plus<>(),
+						  steady_clock::now(),
+						  1h),
+				_1,
+				30s);
+#+END_SRC
+问题在于编译器没有办法决定哪个 setAlarm 应该被传递给 std::bind，它拥有的只是一个函数名，而这单独的函数名是有歧义的
+
+为了让 std::bind 可以通过编译，setAlarm 必须转换为合适的函数指针类型
+
+#+BEGIN_SRC C++
+  using SetAlarm3ParamType = void(*)(Time t, Sound s, Duration d);
+  auto setSoundB = // now
+	  std::bind(static_cast<SetAlarm3ParamType>(setAlarm), // okay
+				std::bind(std::plus<>(),
+						  steady_clock::now(),
+						  1h),
+				_1,
+				30s);
+#+END_SRC
+但这又引出了 lambda 和 std::bind 的另一个不同之处。在 setSoundL 的函数调用操作符内（即，lambda 的闭包类的函数调用操作符），
+是以普通函数调用的方式调用 setAlarm，这可以被编译器以通用的方式内联：
+
+#+BEGIN_SRC C++
+  setSoundL(Sound::Siren); // body of setAlarm may
+  // well be inlined here
+#+END_SRC
+不过，在 std::bind 的调用中，传递了一个指向 setAlarm 的函数指针，而那意味着在 setSoundB 的函数调用操作符内（即，绑定对象的函数调用操作符），
+是以函数指针的方式调用 setAlarm，而那意味着通过 setSoundB 调用的 setAlarm，比通过 setSoundL 调用的 setAlarm 进行内联的可能性更低：
+
+#+BEGIN_SRC C++
+  setSoundB(Sound::Siren); // body of setAlarm is less
+  // likely to be inlined here
+#+END_SRC
+因此，使用 lambda 生成的代码可能会比使用 std::bind 的快。
+
+setAlarm 那个例子只是简单地调用了一个函数，如果你想做一些更复杂的事情，使用 lambda 的好处会更加明显。
+例如，思考这个 C++14 的 lambda，返回它的实参是否在最小值（lowVal）和最大值（highVal）之间，lowVal 和 highVal 都是局部变量：
+
+#+BEGIN_SRC C++
+  auto betweenL =
+	  [lowVal, highVal]
+	  (const auto& val) // C++14
+  { return lowVal <= val && val <= highVal; };
+#+END_SRC
+std::bind 也可以表达同样的东西，不过它为了保证工作正常运行而让代码变得晦涩：
+
+#+BEGIN_SRC C++
+  using namespace std::placeholders; // as above
+  auto betweenB =
+	  std::bind(std::logical_and<>(), // C++14
+				std::bind(std::less_equal<>(), lowVal, _1),
+				std::bind(std::less_equal<>(), _1, highVal));
+#+END_SRC
+在 C++11，你还必须指定要比较的类型，所以 std::bind 的调用看起来是这样的：
+
+#+BEGIN_SRC C++
+  auto betweenB = // C++11 version
+	  std::bind(std::logical_and<bool>(),
+				std::bind(std::less_equal<int>(), lowVal, _1),
+				std::bind(std::less_equal<int>(), _1, highVal));
+#+END_SRC
+当然，在 C++11 中，lambda 不能使用 auto 形参，所以它也必须指定类型：
+
+#+BEGIN_SRC C++
+  auto betweenL = // C++11 version
+	  [lowVal, highVal]
+	  (int val)
+  { return lowVal <= val && val <= highVal; };
+#+END_SRC
+不管怎样，我希望我们能认同 lambda 的版本不仅代码更短，还具有更好的可读性和可维护性。
+
+在早些时候，我提起过对于那些对 std::bind 没有经验的程序员，占位符（例如，_1，_2 等）跟是魔术一样。
+不过，占位符的行为不是完全密封的。假设我们有一个用来精简拷贝 Widget 的函数，
+
+#+BEGIN_SRC C++
+  enum class CompLevel { Low, Normal, High }; // compression
+  // level
+  Widget compress(const Widget& w, // make compressed
+				  CompLevel lev); // copy of w
+#+END_SRC
+然后我们想要创建一个函数对象，它允许我们指定 Widget w 的精简级别，这是用 std::bind 创建的函数对象：
+
+#+BEGIN_SRC C++
+  Widget w;
+  using namespace std::placeholders;
+  auto compressRateB = std::bind(compress, w, _1);
+#+END_SRC
+当我们把 w 传递给 std::bind 时，为了以后的 compress 调用，w 会被存储起来，它存储在对象 compressRateB 中，但它是如何存储的呢——通过值还是引用呢？
+这是会导致不一样的结果，因为如果 w 在调用 std::bind 和调用 compressRateB 之间被修改，通过引用存储的 w 也会随之改变，而通过值存储就不会改变。
+
+答案是通过值存储，你想知道答案的唯一办法就是知道 std::bind 是如何工作的；但在 std::bind 中没有任何迹象。
+对比使用 lambda 方法，w 通过值捕获或通过引用捕获都是显式的：
+
+#+BEGIN_SRC C++
+  auto compressRateL = // w is captured by
+	  [w](CompLevel lev) // value; lev is
+  { return compress(w, lev); }; // passed by value
+#+END_SRC
+参数以何种方式传递也是显示的。在这里，很清楚地知道参数 lev 是以值传递的。因此：
+
+#+BEGIN_SRC C++
+  compressRateL(CompLevel::High); // arg is passed
+  // by value
+#+END_SRC
+但在绑定对象里，参数是以什么方式传递的呢？
+
+#+BEGIN_SRC C++
+  compressRateB(CompLevel::High); // how is arg
+  // passed?
+#+END_SRC
+再次说明，想知答案的唯一办法是记住 std::bind 是怎样工作的。（答案是传递给绑定对象的所有参数都是通过引用的方式，因为绑定对象的函数调用操作符使用了完美转发。）
+
+那么，对比 lambda，使用 std::bind 的代码可读性不足、表达能力不足，还可能效率低。在 C++14，没有理由使用 std::bind。
+而在 C++11，std::bind 可以使用在受限的两个场合：
++ 移动捕获。C++11 的 lambda 没有提供移动捕获，但可以结合 std::bind 和 lambda 来效仿移动捕获。具体细节看条款 32，那里也解释了 C++11 效仿 C++14 的 lambda 提供的初始化捕获的情况。
++ 多态函数对象。因为绑定对象的函数调用操作符会使用完美转发，它可以接受任何类型的实参（条款 30 讲述了完美转发的限制）。这在你想要绑定一个函数调用操作符模板时有用。例如，给定这个类：
+
+  #+BEGIN_SRC C++
+	class PolyWidget {
+	public:
+		template<typename T>
+		void operator()(const T& param);
+		…
+	};
+  #+END_SRC
+std::bind 可以绑定 polyWidget 对象：
+
+#+BEGIN_SRC C++
+  PolyWidget pw;
+  auto boundPW = std::bind(pw, _1);
+#+END_SRC
+然后 boundPW 可以绑定任何类型的实参：
+
+#+BEGIN_SRC C++
+  boundPW(1930); // pass int to
+  // PolyWidget::operator()
+  boundPW(nullptr); // pass nullptr to
+  // PolyWidget::operator()
+  boundPW("Rosebud"); // pass string literal to
+  // PolyWidget::operator()
+#+END_SRC
+这在 C++11 的 lambda 里无法做到，但是在 C++14，使用 auto 形参就很容易做到了：
+
+#+BEGIN_SRC C++
+  auto boundPW = [pw](const auto& param) // C++14
+  { pw(param); };
+#+END_SRC
+当然，这些都是边缘情况，而且这种边缘情况会转瞬即逝，因为支持 C++14 的编译器已经越来越普遍。
+
+2005 年，bind 非官方地加入了 C++，比起它的前身有了很多的进步。而在 C++11，lambda 几乎要淘汰 std::bind，
+而在 C++14，std::bind 已经没有需要使用的场合了。
+** 记住
++ 比起使用 std::bind，lambda 有更好的可读性，更强的表达能力，可能还有更高的效率。
++ 在 C++11，只有在实现移动捕获或者绑定函数调用操作符模板时，std::bind 可能是有用的。
+* 参考
+  原文：effective-modern-c++
+  翻译：http://blog.csdn.net/big_yellow_duck/article/category/635234

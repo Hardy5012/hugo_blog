@@ -1,0 +1,27 @@
+#+TITLE: 性能分析
+#+DATE: 2016-09-05
+#+LAYOUT: post
+#+CATEGORIES: notes 
+#+TAGS: gprof
+
+* c++ 程序性能分析 
+** 环境准备
+*** 安装 graphviz
+    #+BEGIN_SRC sh
+      sudo yum install graphviz.x86_64
+    #+END_SRC
+*** 安装 gprof2dot
+
+    #+BEGIN_SRC sh
+      sudo pip install gprof2dot
+    #+END_SRC
+
+** 在 makefile 中增加 -pg 参数
+** 导出图片
+
+   #+BEGIN_SRC sh
+     gprof 程序名 gmon.out|gprof2dot -s | dot -Tpng -o output.png
+   #+END_SRC
+   gprof2dot 后面带参数-s 是简化函数名
+
+{{{more}}}

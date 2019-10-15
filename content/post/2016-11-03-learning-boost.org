@@ -1,0 +1,19 @@
+#+TITLE: learning boost
+#+DATE: 2016-11-03
+#+LAYOUT: post
+#+CATEGORIES: notes 
+#+TAGS: boost
+
+* MSM
+
+**** 执行顺序: start state on_exit -> action -> next state on_entry
+**** 状态转换判断顺序： 按转表换插入的反序来判断，即在从转换表后面开始判断,同样满足条件的，执行后面
+**** 事件只能激活子状态中每组状态机中的一个状态，即显示的激活了一个状态，则对应的默认状态不被激活
+**** 转发的事件必须在退出点定义中命名,例 event6 需要在退出状态中定义
+
+     #+BEGIN_SRC C++
+       struct PseudoExit1 : public msm::front::exit_pseudo_state<event6> 
+     #+END_SRC
+
+
+{{{more}}}

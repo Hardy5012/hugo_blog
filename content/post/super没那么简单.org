@@ -1,0 +1,178 @@
+#+TITLE: super 没那么简单
+#+DATE: 2018-10-09
+#+LAYOUT: post
+#+TAGS: Python
+#+CATEGORIES: summary
+
+    大家都知道使用 super 来调用父类了方法，但如何正确使用 super 普遍知之甚少。
+为了弄清它的原理，我们需要花点时间解释下 Python 是如何实现继承的。 
+对于你定义的每一个类，Python 会计算出一个所谓的方法解析顺序(MRO)列表。 这个 MRO 列表就是一个简单的所有基类的线性顺序表。
+#+HTML: <!-- more -->
+* MRO(Method Resolution Order)
+   Python 中是使用 C3 算法来确定 MRO 的。可通过 mro()函数来获取每个类的 MRO。
+
+首先了解 C3 的一些基本定义：
+
+   #+BEGIN_SRC org
+	 C1C2...CN
+   #+END_SRC
+   表示一个包含多个类的列表 [C1,C2,...,CN]
+
+   例表的第一个元素定义为 head:
+
+   #+BEGIN_SRC org
+	 head = C1
+   #+END_SRC
+ 剩余的为 tail:
+
+ #+BEGIN_SRC org
+   tail = C2...CN
+ #+END_SRC
+
+例表相加 [C] + [C1,C2,...,CN]:
+
+#+BEGIN_SRC org
+  C + (C1C2...CN) = CC1C2...CN
+#+END_SRC
+
+考虑我们有个多继承的类 C，基类为 B1,B2,...,BN.现在要计算类 C 的线性顺序表 L[C].规则为
+1. C 的线性顺序表为 C 加上 父类的线性顺序表 和 父类例表的 merge.
+
+   #+BEGIN_SRC org
+	 L[C(B1,B2,...,BN)] = C + merge(L[B1], L[B2],...,L[BN], B1,B2,...BN)
+   #+END_SRC
+特别的如果 C 是 object，也就是没有父类:
+
+#+BEGIN_SRC org
+  L[object] = object
+#+END_SRC
+
+而 merge 的计算规则为:
+1. 取出第一个例表的 head,如 L[B1][0]
+2. 如果这个 head 不在其它例表的 tail 中则把它加入到 C 的线性顺序表中，同时在 merge 的例表中删除它。否则则取下一个例表的头。
+3. 重复操作只到所有的类都移除，或找不到合适的 head.
+
+特别，如果 merge 只有一个父类：
+
+#+BEGIN_SRC org
+  L[C(B)] = C + merge(L[B], B) = C + L[B]
+#+END_SRC
+
+看个例子：
+
+#+BEGIN_SRC python
+  O = object
+  class F(O): pass
+  class E(O): pass
+  class D(O): pass
+  class C(D,F): pass
+  class B(D,E): pass
+  class A(B,C): pass
+#+END_SRC
+L[C]:
+
+#+BEGIN_SRC org
+  L[C] = L[C(D, F)]
+  = C + merge(L[D], L[F], DF)
+  # 从前面可知 L[D] 和 L[F] 的结果
+	   = C +  merge(DO, FO, DF)
+	   # 因为 D 是顺序第一个并且在几个包含 D 的 list 中是 head，
+	   # 所以这一次取 D 同时从列表中删除 D
+	   = C + D + merge(O, FO, F)
+	   # 因为 O 虽然是顺序第一个但在其他 list (FO)中不是 head, 跳过,
+	   # 改为检查第二个 list FO # F 是第二个 list 和其他 list 的 head,
+	   # 取 F 同时从列表中删除 F
+	   = C + D + F + merge(O)
+	   = C D F O
+#+END_SRC
+
+* super
+python3 直接使用 super():
+
+#+BEGIN_SRC python
+  class C(B):
+	  def method(self, arg):
+		  super().method(arg)    # This does the same thing as:
+		  # super(C, self).method(arg)
+#+END_SRC
+
+当你使用 super() 函数时，Python 会在 MRO 列表上继续搜索下一个类(如上面的列子，会在 L[C]中位于 C 后面的子列表查找).
+
+
+列子：
+
+#+BEGIN_SRC python
+  class A:
+
+	  def __init__(self):
+		  self.n = 2
+
+	  def add(self, m):
+		  print('self is {0} @A.add'.format(self))
+		  self.n += m
+
+
+  class B(A):
+
+	  def __init__(self):
+		  self.n = 3
+
+	  def add(self, m):
+		  print('self is {0} @B.add'.format(self))
+		  super().add(m)
+		  self.n += 3
+
+
+  class C(A):
+
+	  def __init__(self):
+		  self.n = 4
+
+	  def add(self, m):
+		  print('self is {0} @C.add'.format(self))
+		  super().add(m)
+		  self.n += 4
+
+
+  class D(B, C):
+
+	  def __init__(self):
+		  self.n = 5
+
+	  def add(self, m):
+		  print('self is {0} @D.add'.format(self))
+		  super().add(m)
+		  self.n += 5
+
+
+  d = D()
+  d.add(2)
+  print(d.n)
+
+#+END_SRC
+调用如下:
+
+#+BEGIN_SRC org
+  D.mro() == [D, B, C, A, object]
+  d = D()
+  d.n == 5
+  d.add(2)
+
+  class D(B, C):          class B(A):            class C(A):             class A:
+	  def add(self, m):       def add(self, m):      def add(self, m):       def add(self, m):
+		  super().add(m)  1.--->  super().add(m) 2.--->  super().add(m)  3.--->  self.n += m
+		  self.n += 5   <------6. self.n += 3    <----5. self.n += 4     <----4. <--|
+		  (14+5=19)               (11+3=14)              (7+4=11)                (5+2=7)
+#+END_SRC
+
+**  super() 可能会非直接父类方法
+首先，确保在继承体系中所有相同名字的方法拥有可兼容的参数签名(比如相同的参数个数和参数名称)。 
+这样可以确保 super() 调用一个非直接父类方法
+然而，由于 super() 可能会调用不是你想要的方法，你应该遵循一些通用原则。 
+首先，确保在继承体系中所有相同名字的方法拥有可兼容的参数签名(比如相同的参数个数和参数名称)。 
+这样可以确保 super() 调用一个非直接父类方法时不会出错。 其次，最好确保最顶层的类提供了这个方法的实现，
+这样的话在 MRO 上面的查找链肯定可以找到某个确定的方法。
+* 参数资料
+http://sixty-north.com/blog/pythons-super-not-as-simple-as-you-thought.html
+https://www.python.org/download/releases/2.3/mro/
+https://mozillazg.com/2016/12/python-super-is-not-as-simple-as-you-thought.html

@@ -1,0 +1,153 @@
+#+TITLE: linux 环境
+#+DATE: 2017-11-16
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: linux
+#+CATEGORIES: notes
+
+* 翻墙
+** ssh
+
+   #+BEGIN_SRC sh
+	 sudo ssh -qTfnN -D 8087 user@remote-hosts
+   #+END_SRC
+上面的 8087 是本地未被占用的端口，可以自己选择。其它参数的意思是：
+-q :- be very quite, we are acting only as a tunnel.
+-T :- Do not allocate a pseudo tty, we are only acting a tunnel.
+-f :- move the ssh process to background, as we don’t want to interact with this ssh session directly.
+-N :- Do not execute remote command.
+-n :- redirect standard input to /dev/null.
+{{{more}}}
+* gcc
+** Install dependencies
+
+   #+BEGIN_SRC sh
+yum install gmp-devel mpfr-devel libmpc-devel
+   #+END_SRC
+** Downloading gcc
+You can download the GCC source code from the [[https://ftp.gnu.org/gnu/gcc/][official GNU ftp.]] 
+
+#+BEGIN_SRC sh
+  curl https://ftp.gnu.org/gnu/gcc/gcc-8.3.0/gcc-8.3.0.tar.xz -O
+  tar --xz -xvf gcc-8.3.0.tar.xz
+#+END_SRC
+** Configuration and install
+
+   #+BEGIN_SRC sh
+	 mkdir gcc-build
+	 cd gcc-build
+	 ../gcc-8.3.0/configure --enable-languages=c,c++ --prefix=/usr/local/gcc8 --disable-multilib 
+	 make
+	 make install
+   #+END_SRC
+** replace libstdc++
+   check version
+   #+BEGIN_SRC sh
+	 strings /usr/lib64/libstdc++.so.6 | grep GLIBC
+   #+END_SRC
+   find lib
+
+   #+BEGIN_SRC sh
+	 find / -name "libstdc++.so*"
+   #+END_SRC
+
+* Adding a Yum Repository
+** To define a new repository, you can either add a [repository] section to the /etc/yum.conf file, or to a .repo file in the /etc/yum.repos.d/ directory
+Yum repositories commonly provide their own .repo file. To add such a repository to your system and enable it, run the following command as root:
+
+#+BEGIN_SRC sh
+  yum-config-manager --add-repo repository_url
+#+END_SRC
+
+** Enabling a Yum Repository
+
+   #+BEGIN_SRC sh
+	 yum-config-manager --enable example\*
+   #+END_SRC
+* clang 5.0
+** add yum repo
+
+   #+BEGIN_SRC sh
+	 yum-config-manager --add-repo https://copr.fedorainfracloud.org/coprs/alonid/llvm-5.0.0/repo/epel-7/alonid-llvm-5.0.0-epel-7.repo
+	 yum-config-manager --enable  alonid-llvm-5.0.0-epel-7
+   #+END_SRC
+ [[https://copr.fedorainfracloud.org/coprs/alonid/llvm-5.0.0/][fedora cop]]r 会提供最新安装包的 repo
+** yum install clang-5.0.0 && yum install clang-5.0.0-devel
+** You may need to set PATH to include /opt/llvm-5.0.0/bin. LD_LIBRARY_PATH include /opt/llvm-5.0.0/lib64
+
+* cmake 
+** download
+
+   #+BEGIN_SRC sh
+	 curl https://cmake.org/files/v3.14/cmake-3.14.5.tar.gz -O
+	 tar -zxvf cmake-3.14.5.tar.gz
+   #+END_SRC
+
+** install
+
+   #+BEGIN_SRC sh
+	 ./bootstrap
+	 make
+	 make install
+   #+END_SRC
+
+* boost 1.70	
+** download
+
+   #+BEGIN_SRC sh
+	 wget https://dl.bintray.com/boostorg/release/1.70.0/source/boost_1_70_0.tar.gz
+	 tar -zxvf boost_1_70_0.tar.gz
+   #+END_SRC
+** install
+
+   #+BEGIN_SRC sh
+	 ./bootstrap.sh --prefix=path/to/installation/prefix
+	 ./b2  cxxflags=-std=c++17 install
+   #+END_SRC
+
+
+* protobuf 
+** download
+
+   #+BEGIN_SRC sh
+	 git clone git@github.com:google/protobuf.git
+	 cd protobuf && git checkout v3.5.1.1
+
+   #+END_SRC
+** install
+
+   #+BEGIN_SRC C++
+git submodule update --init --recursive && ./autogen.sh
+	 ./configure --prefix=/usr/local/protobuf3
+		   make
+		   make check
+		   sudo make install
+		   sudo ldconfig
+   #+END_SRC
+** modify .bashrc 
+   #+BEGIN_SRC sh
+	 export PKG_CONFIG_PATH=/usr/local/protobuf3/lib/pkgconfig/
+	 export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH:/usr/local/protobuf3/lib
+	 export PATH=$PATH:/usr/local/protobuf3/bin
+
+	 export CMAKE_INCLUDE_PATH=/usr/local/protobuf3/include/
+	 export CMAKE_LIBRARY_PATH=/usr/local/protobuf3/lib
+   #+END_SRC
+* oracle 11.2
+** download 
+   http://www.oracle.com/technetwork/cn/topics/linuxx86-64soft-092277.html#ic_x64_inst
+** install
+
+   #+BEGIN_SRC sh
+	 sudo yum install oracle-instantclient11.2-basic-11.2.0.4.0-1.x86_64.rpm 
+	 sudo yum install oracle-instantclient11.2-devel-11.2.0.4.0-1.x86_64.rpm 
+
+   #+END_SRC
+** modify .bashrc
+
+   #+BEGIN_SRC sh
+	 export ORACLE_HOME=/usr/lib/oracle/11.2/client64
+	 export TNS_ADMIN=$ORACLE_HOME/network/admin
+	 export PATH=$PATH:$ORACLE_HOME/bin
+	 export LD_LIBRARY_PATH=.:$LD_LIBRARY_PATH:$ORACLE_HOME/lib
+   #+END_SRC

@@ -1,0 +1,417 @@
+#+TITLE: C++ Ep06:Smart Pointers(1)
+#+DATE: 2017-12-29
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++
+#+CATEGORIES: Modern C++
+
+* item 18: 使用 std::unique_ptr 来管理独占所有权的资源
+当你需要一个智能指针的时候，std::unique_ptr 通常是最接近你需求的那一个。默认情况下，这么假设是很合理的：std::unique_ptr 和原始指针的大小是一样的，
+并且很多操作（包括解引用），它们执行的是完全相同的指令。这意味着你甚至能把它们用在对内存和时间都很紧的地方。如果一个原始指针对你来说足够的小和快，
+那么一个 std::unique_ptr 也几乎可以肯定是这样的。
+
+std::unique_ptr 表现出独占所有权的语义。一个非空的 std::unique_ptr 总是对它指向的资源拥有所有权。
+move 一个 std::unique_ptr 将把所有权从源指针转交给目标指针（源指针将被设置为 null）。拷贝一个 std::unique_ptr 是不被允许的，
+因为如果你拷贝一个 std::unique_ptr，你将得到两个 std::unique_ptr 指向同样的资源，然后这两个指针都认为它们拥有资源（因此应该释放资源）。
+因此 std::unique_ptr 是一个 move-only（只能进行 move 操作的）类型。再看看资源的销毁，一个非空的 std::unique_ptr 销毁它的资源。
+默认情况下，通过在 std::unique_ptr 中 delete 一个原始指针的方法来进行资源的销毁。
+
+std::unique_ptr 的常用方法是作为一个工厂函数的返回类型（指向类层次中的对象），假设我们有一个投资类型的类层次（比如，股票，债券，不动产等等），
+这个类层次的基类是 Investment。
+
+#+BEGIN_SRC C++
+  class Investment { … };
+  class Stock:
+	  public Investment { … };
+  class Bond:
+	  public Investment { … };
+  class RealEstate:
+	  public Investment { … };
+#+END_SRC
+#+HTML: <!-- more -->
+对于这样的类层次，一个工厂函数常常会在堆上分配一个对象，并且返回一个指向这个对象的指针，当这个对象不再需要被使用的时候，调用者有责任销毁这个对象。
+这完全符合 std::unique_ptr 的概念，因为调用者要对工厂返回的资源负责（也就是，它独占了所有权），然后当 std::unique_ptr 被销毁的时候，
+std::unique_ptr 会自动销毁它指向的对象。对于 Investment 类层次，一个工厂函数能被声明成这样：
+
+#+BEGIN_SRC C++
+  template<typename... Ts> // return std::unique_ptr
+  std::unique_ptr<Investment> // to an object created
+  makeInvestment(Ts&&... params); // from the given args
+#+END_SRC
+调用者能在一个作用域中像下面这样使用所返回的 std::unique_ptr：
+
+#+BEGIN_SRC C++
+  {
+	  ...
+	  auto pInvestment = // pInvestment is of type
+		  makeInvestment( arguments ); // std::unique_ptr<Investment>
+	  …
+		  } auto pInvestment = // pInvestment is of type
+	  makeInvestment( arguments ); // std::unique_ptr<Investment>
+  …
+  }
+#+END_SRC
+但是他们也能把它用在“转移所有权”的语义中，比如说当工厂返回的 std::unique_ptr 被 move 到容器中去了，
+容器中的元素接着被 move 到一个对象的成员变量中去了，然后这个对象之后会被销毁。当这个对象被销毁时，
+对象的 std::unique_ptr 成员变量也将被销毁，然后它的销毁会造成由工厂返回的资源被销毁。
+如果由于一个异常或者其他的非正常的控制流（比如，在循环中 return 或 break），所有权链被打断了，
+持有被管理资源的 std::unique_ptr 最终还是会调用它的析构函数，因此被管理的资源还是会被销毁。
+
+默认情况下，销毁是通过 delete 进行的，但是，在销毁的时候，std::unique_ptr 对象能调用自定义的 deleter（销毁函数）：当资源需要被销毁的时候，
+任意的自定义函数（或仿函数，包括通过 lambda 表达式产生的仿函数）将被调用。如果由 makeInvestment 创造的对象不应该直接 delete，
+而是需要先写下日志记录，makeInvestment 能被实现成下面这样
+
+#+BEGIN_SRC C++
+  auto delInvmt = [](Investment* pInvestment) // custom
+  { // deleter
+	  makeLogEntry(pInvestment); // (a lambda
+	  delete pInvestment; // expression)
+  };
+  template<typename... Ts> // revised
+  std::unique_ptr<Investment, decltype(delInvmt)> // return type
+  makeInvestment(Ts&&... params)
+  {
+	  std::unique_ptr<Investment, decltype(delInvmt)> // ptr to be
+		  pInv(nullptr, delInvmt); // returned
+	  if ( /* a Stock object should be created */ )
+	  {
+		  pInv.reset(new Stock(std::forward<Ts>(params)...));
+	  }
+	  else if ( /* a Bond object should be created */ )
+	  {
+		  pInv.reset(new Bond(std::forward<Ts>(params)...));
+	  }
+	  else if ( /* a RealEstate object should be created */ )
+	  {
+		  pInv.reset(new RealEstate(std::forward<Ts>(params)...));
+	  }
+	  return pInv;
+  }
+#+END_SRC
+从一个客户的角度来说，makeInvestment 的接口是良好的。一旦你理解了下面的东西，你会发现它的实现也是非常好的：
++ delInvmt 是从 makeInvestment 返回的对象（std::unique_ptr 对象）的自定义 deleter，所有的自定义销毁函数接受一个原始指针（这个指针指向需要被销毁的资源），然后做一些在销毁对象时必须做的事，我们的这种情况，函数的行为就是调用 makeLogEntry 并且调用 delete。使用一个 lambda 表达式来创造 delInvmt 是很方便的，但是我们很快就能看到，比起一个传统的函数来说，它更高效。
++ 当一个自定义 deleter 被使用的时候，它的类型需要作为 std::unique_ptr 模板的第二个参数。我们的这种情况，就是 delInvmt 的类型，并且这也就是为什么 makeInvestment 的返回类型是 std::unique_ptr。（关于 decltype 的信息，请看 Item 3。）
++ makeInvestment 最基本的策略是要创造一个 null std::unique_ptr，然后让它指向一个类型符合要求的对象，然后返回它。为了把自定义 deleter delInvmt 和 pInv 关联起来，我们需要把它作为构造函数的第二个参数传入。
++ 尝试把一个原始指针（比如，从 new 返回的）赋值给一个 std::unique_ptr 是无法通过编译的，因为这将形成从原始指针到智能指针的隐式转换，这样的隐式转换是有问题的，所以 C++11 的智能指针禁止这样的转换。这也就是为什么 reset 被用来：让 pInv 获得对象（通过 new 创建）的所有权。
++ 对于每个 new，我们使用 std::forward 来让传给 makeInvestment 的参数能完美转发（看 Item 25）。这使得当对象创建时，构造函数能获得由调用者提供的所有信息。
++ 自定义 deleter 需要一个 Investment*类型的参数。不管 makeInvestment 中创造的对象的真正类型是什么（也就是，Stock，Bond 或者 RealEstate），它最终都能在 lambda 表达式中，作为一个 Investment*对象被 delete 掉。这意味着我们将通过一个基类指针 delete 一个派生类对象。为了让这正常工作，基类（Investment）必须要有一个 virutal 析构函数
+
+  #+BEGIN_SRC C++
+	class Investment {
+	public:
+		… // essential
+		virtual ~Investment(); // design
+		… // component!
+	};
+  #+END_SRC
+在 C++14 中，由于函数返回值类型推导规则（看 Item 3）的存在，意味着 makeInvestment 能被实现成更加简洁以及更加封装的方式(使用 auto 返回后，lambda 放到了里面)：
+
+#+BEGIN_SRC C++
+  template<typename... Ts>
+  auto makeInvestment(Ts&&... params) // C++14
+  {
+	  auto delInvmt = [](Investment* pInvestment) // this is now
+		  { // inside
+			  makeLogEntry(pInvestment); // makedelete
+			  pInvestment; // Investment
+		  };
+	  std::unique_ptr<Investment, decltype(delInvmt)> // as
+		  pInv(nullptr, delInvmt); // before
+	  if ( … ) // as before
+	  {
+		  pInv.reset(new Stock(std::forward<Ts>(params)...));
+	  }
+	  else if ( … ) // as before
+	  {
+		  pInv.reset(new Bond(std::forward<Ts>(params)...));
+	  }
+	  else if ( … ) // as before
+	  {
+		  pInv.reset(new RealEstate(std::forward<Ts>(params)...));
+	  }
+	  return pInv; // as before
+  }
+#+END_SRC
+我在之前就说过，当使用默认 deleter（也就是，delete）时，你能合理地假设 std::unique_ptr 对象和原始指针的大小是一样。
+当自定义 deleter 参合进来时，情况也许就不是这样了。当 deleter 是函数指针的时候，通常会造成 std::unique_ptr 的大小从 1 个字节增加到 2 个字节
+（32 位的情况下）。对于仿函数 deleter，变化的大小依赖于仿函数中存储的状态有多少。没有状态的仿函数（比如，不捕获变量的 lambda 表达式）
+遭受的大小的惩罚是 0（不会改变大小），这意味着当自定义 deleter 能被实现为函数或 lambda 表达式时，lambda 是更好的选择：
+
+#+BEGIN_SRC C++
+  auto delInvmt1 = [](Investment* pInvestment) // custom
+  { // deleter
+	  makeLogEntry(pInvestment); // as
+	  delete pInvestment; // stateless
+  }; // lambda
+  template<typename... Ts> // return type
+  std::unique_ptr<Investment, decltype(delInvmt1)> // has size of
+  makeInvestment(Ts&&... args); // Investment*
+  void delInvmt2(Investment* pInvestment) // custom
+  { // deleter
+	  makeLogEntry(pInvestment); // as function
+	  delete pInvestment;
+  }
+  template<typename... Ts> // return type has
+  std::unique_ptr<Investment, // size of Investment*
+				  void (*)(Investment*)> // plus at least size
+  makeInvestment(Ts&&... params); // of function pointer!
+#+END_SRC
+带大量状态的仿函数 deleter 会产生大小很大的 std::unique_ptr。如果你发现一个自定义 deleter 让你的 std::unique_ptr 大到无法接受，你可能需要改变你的设计了。
+
+std::unique_ptr 有两种形式，一种是给单个对象（std::unique_ptr）用的，另一种是给数组（std::unique_ptr）用的。
+因此，这里永远不会有任何模糊的情况：对于 std::unique_ptr 指向的是数组还是单独的对象。std::unique_ptr 的 API 的设计符合你的使用习惯。
+举个例子，单个对象没有下标操作（operator[]），同时数组的形式没有解引用操作（operator*和 operator->）
+
+std::unique_ptr 数组的存在应该只能作为你感兴趣的技术，因为比起原始数组，std::array，std::vector 以及 std::string 几乎总是更好的数据结构的选择。
+关于我能想象到的唯一的情景使得 std::unique_ptr 是有意义的，那就只有当你使用类 C 的 API 时（并且它返回一个原始指针，指向堆上的数组，同时你拥有它的所有权）。
+
+std::unique_ptr 是在 C++11 中表达独占所有权的方式，但是它最吸引人的特性是，它能简单并高效地转换到 std::shared_ptr：
+
+#+BEGIN_SRC C++
+  std::shared_ptr<Investment> sp = // converts std::unique_ptr
+	  makeInvestment( arguments ); // to std::shared_ptr
+#+END_SRC
+这就是为什么 std::unique_ptr 这么适合作为工厂函数的返回值类型的关键所在。工厂函数不知道调用者是否想要把对象用在独占所有权的语义上还是共享所有权（也就是 std::shared_ptr）的语义上。通过返回一个 std::unique_ptr，工厂提供给调用者一个最高效的智能指针，但是他们不阻止调用者把它转换成它更灵活的兄弟（std::shared_ptr）
+** 记住
++ std::unique_ptr 是一个小的，快的，move-only 的智能指针，它能用来管理资源，并且独占资源的所有权。
++ 默认情况下，资源的销毁是通过 delete 进行的，但是自定义 deleter 能指定销毁的行为。用带状态的 deleter 和函数指针作为 deleter 会增加 std::unique_ptr 对象的大小。
++ 从 std::unique_ptr 转换到 std::shared_ptr 很简单。
+* item 19: 使用 std::shared_ptr 来管理共享所有权的资源
+通过 std::shared_ptr 可以访问对象，这个对象的生命周期由智能指针以共享所有权的语义来管理。
+没有一个明确的 std::shared_ptr 占有这个对象。取而代之的是，所有指向这个对象的 std::shared_ptr 一起合作来确保：
+当这个对象不再被需要的时候，它能被销毁。当最后一个指向对象的 std::shared_ptr 不再指向这个对象
+（比如，因为 std::shared_ptr 被销毁了或者指向了别的对象）std::shared_ptr 会销毁它指向的对象。
+就像垃圾回收机制一样，客户不需要管理被指向的对象的生命周期了，但是和析构函数一样，对象的销毁的时间是确定的。
+
+通过查看引用计数（reference count，一个和资源关联的值，这个值能记录有多少 std::shared_ptr 指向资源），
+一个 std::shared_ptr 能告诉我们它是否是最后一个指向这个资源的指针。std::shared_ptr 的构造函数会增加引用计数
+（通常，而不是总是，请看下面），std::shared_ptr 的析构函数会减少引用计数，拷贝 operator=既增加也减少
+（如果 sp1 和 sp2 是指向不同对象的 std::shared_ptr，赋值操作“sp1 = sp2”会修改 sp1 来让它指向 sp2 指向的对象。
+这个赋值操作最后产生的效果就是：原本被 sp1 指向的对象的引用计数减少了，同时被 sp2 指向的对象的引用计数增加了。）
+如果一个 std::shared_ptr 看到一个引用计数在一次自减操作后变成 0 了，这就意味着没有别的 std::shared_ptr 指向这个资源了，
+所以 std::shared_ptr 就销毁它了。
+
+引用计数的存在带来的性能的影响：
++ std::shared_ptr 是原始指针的两倍大小，因为它们在内部包含了一个指向资源的原始指针，同时包含一个指向资源引用计数的原始指针。
++ 引用计数的内存必须动态分配。概念上来说，引用计数和被指向的资源相关联，但是被指向的对象不知道这件事。因此它们没有地方来存放引用计数。（这里隐含一个令人愉快的提示：任何对象，即使是 built-in 类型的对象都能被 std::shared_ptr 管理）Item 21 解释了，当使用 std::make_shared 来创建 std::shared_ptr 时，动态分配的花费能被避免，但是这里有一些无法使用 std::make_shared 的情况。不管哪种方式，引用计数被当成动态分配的数据来存储。
++ 引用计数的增加和减少操作必须是原子的，因为在不同的线程中可能同时有多个 reader 和 writer。举个例子，在某个线程中指向的一个资源的 std::shared_ptr 正在调用析构函数（因此减少它指向的资源的引用计数），同时，在不同的线程中，一个指向相同资源的 std::shared_ptr 被拷贝了（因此增加了资源的引用计数）。原子操作通常比非原子操作更慢，所以即使引用计数常常只有一个字节的大小，你应该假设对它们的读写是相当费时的
+
+从另外一个 std::shared_ptr 移动构造一个 std::shared_ptr 会设置源 std::shared_ptr 为 null，
+这意味着旧的 std::shared_ptr 停止指向资源的同时新的 std::shared_ptr 开始指向资源。
+所以，它不需要维护引用计数。因此 move std::shared_ptr 比拷贝它们更快： *拷贝需要增加引用计数* ，
+但是 move 不会。这对赋值操作来说也是一样的，所以 move 构造比起拷贝构造更快，move operator=比拷贝 operator=更快。
+
+和 std::unique_ptr(看 Item 18)相似的是，std::shared_ptr 使用 delete 作为它默认的资源销毁机制，
+但是它也能支持自定义的 deleter。但是，它的设计和 std::unique_ptr 不一样。对于 std::unique_ptr 来说，
+deleter 的类型是智能指针类型的一部分。但是对 std::shared_ptr 来说，它不是：
+
+#+BEGIN_SRC C++
+  auto loggingDel = [](Widget *pw) // custom deleter
+  { // (as in Item 18)
+	  makeLogEntry(pw);
+	  delete pw;
+  };
+  std::unique_ptr< // deleter type is
+	  Widget, decltype(loggingDel) // part of ptr type
+	  > upw(new Widget, loggingDel);
+  std::shared_ptr<Widget> // deleter type is not
+  spw(new Widget, loggingDel); // part of ptr type
+#+END_SRC
+
+std::shared_ptr 的设计更加灵活。考虑一下两个 std::shared_ptr，它们带有不同的自定义 deleter。
+（比如，因为自定义 deleter 是通过 lambda 表达式确定的）：
+
+#+BEGIN_SRC C++
+  auto customDeleter1 = [](Widget *pw) { … }; // custom deleters,
+  auto customDeleter2 = [](Widget *pw) { … }; // each with a
+  // different type
+  std::shared_ptr<Widget> pw1(new Widget, customDeleter1);
+  std::shared_ptr<Widget> pw2(new Widget, customDeleter2);
+#+END_SRC
+因为 pw1 和 pw2 有相同类型，它们能被放在同一个容器中：
+
+#+BEGIN_SRC C++
+  std::vector<std::shared_ptr<Widget>> vpw{ pw1, pw2 };
+#+END_SRC
+它们能互相赋值，并且它们都能被传给一个函数作为参数，只要这个函数的参数是 std::shared_ptr 类型。
+这些事使用 std::unique_ptr（根据自定义 deleter 来区分类型）都做不到，因为自定义 deleter 的类型会影响到
+std::unique_ptr 的类型。
+
+另外一个和 std::unique_ptr 不同的地方是，指定一个自定义 deleter 不会改变一个 std::shared_ptr 对象的大小。
+无论一个 deleter 是什么，一个 std::shared_ptr 对象都是两个指针的大小。这是一个好消息，但是它也会让你隐约感到一点不安。
+自定义 deleter 可以是一个仿函数，并且仿函数能包含任意多的数据。这意味着它们能变得任意大。
+那么一个 std::shared_ptr 怎么能指向一个任意大小的 deleter 却不使用任何内存呢？
+
+它不能，它必须要用更多的内存。但是，这些内存不是 std::shared_ptr 对象的一部分。它在堆上，或者，
+如果一个 std::shared_ptr 的创造者利用 std::shared_ptr 支持自定义内存分配器的特性来优化它，
+那么它就在内存分配器管理的内存中。我之前提过一个 std::shared_ptr 对象包含一个指向引用计数
+（std::shared_ptr 指向的对象的引用计数）的指针。这是对的，但是我有点误导你了，
+因为，引用计数只是更大的数据结构（被称为控制块（control block））的一部分。
+每一个被 std::shared_ptr 管理的对象都有一个控制块。除了引用计数，
+控制块还包含：一个自定义 deleter 的拷贝（如果有的话），一个自定义内存分配器的拷贝（如果有的话），
+额外的数据（包括 weak count，Item 21 中解释的第二个引用计数，但是我们在本 Item 中会忽略这个数据）。
+我们能把和 std::shared_ptr 对象关联的内存模型想象成这个样子：
+
+#+DOWNLOADED: /tmp/screenshot.png @ 2018-01-02 10:59:00
+[[file:c++_ep06_smart_pointers_1/screenshot_2018-01-02_10-59-00.png]]
+
+一个对象的控制块是被指向这个对象的第一个 std::shared_ptr 创建的。至少这是应该发生的。
+通常，一个创建 std::shared_ptr 的函数是不可能知道是否有其他 std::shared_ptr 已经指向这个对象了，
+所以控制块的创建遵循这些规则：
++ std::make_shared(看 Item 21)总是创建一个控制块，它制造一个新对象，所以可以肯定当 std::make_shared 被调用的时候，这个对象没有控制块。
++ 当一个 std::shared_ptr 构造自一个独占所有权的指针（也就是，一个 std::unique_ptr 或 std::auto_ptr）时，创造一个控制块。独占所有权的指针不使用控制块，所以被指向的对象没有控制块。（作为构造的一部分，std::shared_ptr 需要承担被指向对象的所有权，所以独占所有权的指针被设置为 null）
++ 当使用一个原始指针调用 std::shared_ptr 的构造函数构造函数时，它创造一个控制块。如果你想使用一个已经有控制块的对象来创建一个 std::shared_ptr 的话，你可以传入一个 std::shared_ptr 或一个 std::weak_ptr(看 Item 20)作为构造函数的参数，但不能传入一个原始指针。使用 std::shared_ptr 或 std::weak_ptr 作为构造函数的参数不会创建一个新的控制块，因为它们能依赖传入的智能指针来指向必要的控制块。
+
+这些规则导致的一个结果就是：用一个原始指针来构造超过一个的 std::shared_ptr 对象会让你免费坐上通往未定义行为的粒子加速器，
+因为被指向的对象会拥有多个控制块。多个控制块就意味着多个引用计数，多个引用计数就意味着对象会被销毁多次（一个引用计数一次）。
+这意味着这样的代码是很糟糕很糟糕很糟糕的：
+
+#+BEGIN_SRC C++
+  auto pw = new Widget; // pw is raw ptr
+  …
+  std::shared_ptr<Widget> spw1(pw, loggingDel); // create control
+  // block for *pw
+  …
+  std::shared_ptr<Widget> spw2(pw, loggingDel); // create 2nd
+  // control block
+  // for *pw!
+#+END_SRC
+创建一个原始指针 pw 指向动态分配的对象是不好的，因为它和这一整章的建议相违背：比起原始指针优先使用智能指针
+但是先把它放在一边。创建 pw 的这一行在格式上是令人厌恶的，但是至少它不会造成未定义的程序行为。
+
+关于 std::shared_ptr 的使用，上面的例子给我们两个教训。第一，尽量避免传入一个原始指针给一个 std::shared_ptr 的构造函数。
+通常的替换品是使用 std::make_shared(看 Item 21)，但是在上面的例子中，我们使用了自定义 deleter，
+那就不能使用 std::make_shared 了。第二，如果你必须传入一个原始指针给 std::shared_ptr 的构造函数，
+那么用“直接传入 new 返回的结果”来替换“传入一个原始指针变量”。如果上面的代码的第一部分被写成这样：
+
+#+BEGIN_SRC C++
+  std::shared_ptr<Widget> spw1(new Widget, // direct use of new
+							   loggingDel);
+#+END_SRC
+使用原始指针变量作为 std::shared_ptr 构造函数的参数时，有一个特别让人惊奇的方式（涉及到 this 指针）会产生多个控制块。
+假设我们的程序使用 std::shared_ptr 来管理 Widget 对象，并且我们有一个数据结构保存处理过的 Widget：
+
+#+BEGIN_SRC C++
+  std::vector<std::shared_ptr<Widget>> processedWidgets;
+#+END_SRC
+进一步假设 Widget 有一个成员函数来做相应的处理：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  …
+	  void process();
+	  …
+  };
+#+END_SRC
+这里有一个“看起来合理”的方法能用在 Widget::process 上：
+#+BEGIN_SRC C++
+  void Widget::process()
+  {
+	  … // process the Widget
+		  processedWidgets.emplace_back(this); // add it to list of
+  } // processed Widgets;
+#+END_SRC
+注释上说这会产生错误已经说明了一切（或者大部分事实，错误的地方是传入 this，
+而不是 emplace_back 的使用。如果你不熟悉 emplace_back，请看 Item 42），这段代码能编译，
+但是它传入一个原始指针（this）给一个 std::shared_ptr 的容器。
+因此 std::shared_ptr 的构造函数将为它指向的 Widget（*this）创建一个新的控制块。
+直到你意识到如果在成员函数外面已经有 std::shared_ptr 指向这个 Widget 前，这听起来都是无害的，
+这是对未定义行为的赌博，设置以及匹配。
+
+std::shared_ptr 的 API 包括一个为这种情况专用的工具。
+它有着标准 C++库所有名字中有可能最奇怪的名字：std::enable_shared_from_this。
+如果你想要一个类被 std::shared_ptr 管理，你能继承自这个基类模板，
+这样就能用 this 指针安全地创建一个 std::shared_ptr。在我们的例子中，
+Widget 应该像这样继承 std::enable_shared_form_this：
+
+#+BEGIN_SRC C++
+  class Widget: public std::enable_shared_from_this<Widget> {
+  public:
+	  …
+	  void process();
+	  …
+  };
+#+END_SRC
+就像我之前说的，std::enable_shared_from_this 是一个基类模板。它的类型参数总是派生类的名字，
+所以 Widget 需要继承一个 std::enable_shared_from_this。
+如果“派生类继承的基类需要用派生类来作为模板参数”让你感到头疼的话，不要去思考这个问题。代码是完全合理的，
+并且这背后是已经建立好的一个设计模式，它有一个标准的名字，虽然这个名字几乎和 std::enable_shared_from_this 一样奇怪。
+名字是“奇特的递归模板模式”（The Curiously Recurring TemplatePattern， 简称 *CRTP* ）。
+
+std::enable_shared_from_this 定义一个成员函数来创建一个指向正确对象的 std::shared_ptr，但是它不复制控制块。
+成员函数是 shared_from_this，并且当你想让 std::shared_ptr 指向 this 指针指向的对象时，你可以在成员函数中使用它。
+这里给出 Widget::process 的安全实现：
+
+#+BEGIN_SRC C++
+  void Widget::process()
+  {
+  // as before, process the Widget
+	  …
+  // add std::shared_ptr to current object to processedWidgets
+		  processedWidgets.emplace_back(shared_from_this());
+  }
+#+END_SRC
+在其内部，shared_from_this 查找当前对象的控制块，并且创建一个新的 std::shared_ptr 并让它指向这个控制块。
+这个设计依赖于当前的对象已经有一个相关联的控制块了。这样的话，这里就必须有一个存在的 std::shared_ptr
+（比如，一个调用 shared_from_this 的成员函数的外部）指向当前的对象。
+如果没有这样的 std::shared_ptr 存在（也就是如果当前对象没有和任何控制块关联），
+即使 shared_from_this 通常会抛出一个异常，它的行为还将是未定义的。
+
+为了防止客户在一个 std::shared_ptr 指向这个对象前，调用成员函数（这个成员函数调用了 shared_from_this），
+继承自 std::enable_shared_from_this 的类常常声明它们的构造函数为 private，
+并且让客户通过调用一个返回 std::shared_ptr 的工厂函数来创建对象，举个例子，看起来像这样：
+
+#+BEGIN_SRC C++
+  class Widget: public std::enable_shared_from_this<Widget> {
+  public:
+  // factory function that perfect-forwards args
+  // to a private ctor
+	  template<typename... Ts>
+	  static std::shared_ptr<Widget> create(Ts&&... params);
+	  …
+	  void process(); // as before
+	  …
+	  private:
+	  … // ctors
+  };
+#+END_SRC
+
+读了关于动态分配控制块，任意大的 deleter 和内存分配器，虚函数机制，以及原子引用计数操作。
+你对 std::shared_ptr 的热情可能多少已经衰减了。很好，它们不是每一种资源管理问题的最好解决办法。
+但是为了它们提供的功能，std::shared_ptr 的这些付出还是合理的。在典型的条件下，
+当使用默认 deleter 以及默认内存分配器，并且使用 std::make_shared 来创建 std::shared_ptr 时，
+控制块只有 3 字节的大小，并且它的分配本质上是免费的（这包括被指向的对象的内存的分配，细节部分看 Item 21）
+解引用一个 std::shared_ptr 不会比解引用一个原始指针更昂贵。执行一个需要改动引用计数的操作
+（比如，拷贝构造函数或拷贝 operator=，析构函数）需要承担一个或两个原子操作，但是这些操作通常被映射到独立的机器指令上，
+所以即使他们可能比起非原子指令更昂贵，但是他们仍然是单条指令。控制块中的虚函数机制，
+在每个被 std::shared_ptr 管理的对象中只使用一次：对象销毁的时候。
+
+用这些适度的花费作为交换，你能得到的是，对动态分配资源的生命周期的自动管理。大多数时候，对于共享所有权的对象的生命周期，
+比起手动管理来说，使用 std::shared_ptr 是更好的选择。如果你发现你在纠结是否承担得起 std::shared_ptr 所带来的负担，
+你需要再考虑一下你是否真的需要共享所有权。如果独享所有权能够做到的话，std::unique_ptr 是更好的选择。
+它的性能状况和原始指针是很接近的，并且从 std::unique_ptr“升级”到 std::shared_ptr 也很简单，
+因为一个 std::shared_ptr 能使用一个 std::unique_ptr 来创建。
+
+反过来就不对了。一旦你已经把对资源的生命周期的管理交给了 std::shared_ptr，你的想法就不能再改变了
+。即使它的引用计数是 1，你也不能改变资源的所有权，也就是说，让一个 std::unique_ptr 来管理它。
+std::shared_ptr 和资源之间的所有权合同指出它是“死前永远在一起”的类型，没有分离，没有取消，没有分配。
+
+另外 std::shared_ptr 不能和数组一起工作。到目前为止这是另外一个和 std::unique_ptr 不同的地方，
+std::shared_ptr 的 API 被设计为只能作为单一对象的指针。这里没有 std::shared_ptr。
+有时候，“聪明的”程序员会这么想：使用一个 std::shared_ptr 来指向一个数组，
+确定一个自定义 deleter 来执行数组的销毁（也就是 delete[]）。这能编译通过，但是它是一个可怕的想法。
+首先，std::shared_ptr 没有提供 operator[]，所以数组的索引操作就要求基于指针运算来实现，这很尴尬。
+另外，对于单个对象来说，std::shared_ptr 支持从“派生类到基类的”转换，但是当应用到数组中时，
+这将开启一扇未知的大门（就是这个原因，std::unique_ptr API 禁止这样的转换）。
+最重要的是，既然 C++11 已经给出了多种 built-in 数组的替代品（比如，std::array,std::vector,std::string），
+声明一个指向原始数组的智能指针总是标识着，这是一个糟糕的设计。
+** 记住
++ std::shared_ptr 提供和垃圾回收机制差不多方便的方法，来对任意的资源进行共享语义的生命周期管理。
++ 比起 std::unique_ptr，std::shared_ptr 对象常常是它的两倍大，需要承担控制块的间接费用，并且需要原子的引用计数操作。
++ 默认的资源销毁操作是通过 delete 进行的，但是自定义 deleter 是支持的。deleter 的类型不会影响到 std::shared_ptr 的类型。
++ 避免从原始指针类型的变量来创建 std::shared_ptr。
+
+* 参考
+原文：effective-modern-c++
+翻译：http://www.cnblogs.com/boydfd/

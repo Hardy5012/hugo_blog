@@ -1,0 +1,273 @@
+#+TITLE: Tweaks(2)
+#+DATE: 2018-02-06
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS:
+#+CATEGORIES:
+
+* Item 42:考虑就地创建而非插入
+如果你有一个容器，比如说 std::strings，将 std::string 元素类型传给插入函数(如, insert, push_front, push_back,
+或是, for std::forward_list, insert_after)添加新的元素，似乎是乎合逻辑的。毕竟，这是容器的内容。
+尽管这可能是逻辑的，但并不总是如此。 考虑这个代码：
+#+HTML: <!-- more -->
+
+#+BEGIN_SRC C++
+  std::vector<std::string> vs; // container of std::string
+  vs.push_back("xyzzy"); // add string literal
+#+END_SRC
+在这里，容器容纳了 std::strings，但是你手头上的东西（你实际上想要 *push_back* 的东西）是一个字符串，也就是引号内的一系列字符。
+字符串文字不是 std::string，这意味着传递给 push_back 的参数不是容器所持有的类型。
+对于 std::vector，push_back 被重载为左值和右值，如下所示：
+
+#+BEGIN_SRC C++
+  template <class T, // from the C++11
+			class Allocator = allocator<T>> // Standard
+  class vector {
+  public:
+	  …
+	  void push_back(const T& x); // insert lvalue
+	  void push_back(T&& x); // insert rvalue
+	  …
+  };
+#+END_SRC
+在这个调用中：
+
+#+BEGIN_SRC C++
+  vs.push_back("xyzzy");
+#+END_SRC
+编译器会看到参数类型（const char [6]）与 push_back（对 std::string 的引用）采用的参数类型之间的不匹配。
+他们通过生成代码来从字符串文字中创建一个临时 std::string 对象来解决这个不匹配问题，并且将这个临时对象传递给 push_back。
+换句话说，他们把这个调用看作是这样写的：
+
+#+BEGIN_SRC C++
+  vs.push_back(std::string("xyzzy")); // create temp. std::string
+  // and pass it to push_back
+#+END_SRC
+代码编译运行，大家快乐。除了性能怪胎之外的每一个人，也就是因为性能怪胎认识到这个代码并不像应该那样高效。
+要在 std::strings 的容器中创建一个新元素，他们明白，一个 std::string 构造函数将不得不被调用，但是上面的代码不会只产生一个构造函数调用。
+它使用两个。 它也调用 std::string 析构函数。 这是 push_back 调用在运行时发生的情况：
+1. 从字符串文字“xyzzy”创建一个临时的 std::string 对象。这个对象没有名字; 我们将其称为 temp。构造 temp 是第一个 std::string 构造。 因为它是一个临时对象，所以 temp 是一个右值。
+2. emp 被传递给 push_back 的右值重载，在那里它被绑定到右值引用参数 x。然后在 std::vector 的内存中构造一个 x 的拷贝。这个构造 - 第二个 - 实际上在 std::vector 中创建了一个新的对象。（用于将 x 复制到 std::vector 中的构造函数是移动构造函数，因为作为右值引用的 x 在复制之前被转换为右值。 有关将右值引用参数转换为右值的信息，见 Item 25）
+3. 在 push_back 返回之后立即销毁 temp，从而调用 std::string 析构函数。
+
+性能怪胎不禁会注意到，如果有方法将字符串字面值直接传递给步骤 2 中构建 std::vector 内的 std::string 对象的代码，我们可以避免构造和析构 temp。这将是最有效的，甚至性能怪胎可以满意。
+
+因为你是一个 C ++程序员，所以你有一个高于平均水平的机会，你是一个性能怪胎。如果你不是，你可能还是同情他们的观点。
+（如果你对性能不感兴趣，你不应该在大厅里的 Python 房间里吗？）
+所以我很高兴地告诉你，在 push_back 的调用中，有一种方法可以最大限度地提高效率。 这是不要叫 push_back。push_back 是错误的功能。 
+你想要的功能是 *emplace_back* 。
+
+emplace_back 完全符合我们的要求：它使用传递给它的任何参数直接在 std::vector 中构造一个 std::string。 没有 temp：
+
+#+BEGIN_SRC C++
+  vs.emplace_back("xyzzy"); // construct std::string inside
+  // vs directly from "xyzzy"
+#+END_SRC
+emplace_back 使用完美的转发，所以，只要你不碰到其中之一完美转发的限制（见 Item 30），您可以通过 emplace_back 传递任意类型的任意数量的参数。
+例如，如果你想通过 std::string 构造函数来创建一个 std::string 的字符串和重复计数，这将做到这一点：
+
+#+BEGIN_SRC C++
+  vs.emplace_back(50, 'x'); // insert std::string consisting
+  // of 50 'x' characters
+#+END_SRC
+
+每个支持 push_back 的标准容器都可以使用 emplace_back。 同样，支持 push_front 的每个标准容器都支持 *emplace_front* 。
+而且每个支持插入的标准容器（除了 std::forward_list 和 std::array 外）都支持 emplace。
+关联容器提供了 *emplace_hint* 来补充它们的插入函数，它们使用“hint”迭代器，std::forward_list 具有 emplace_after 以匹配它的 insert_after。
+
+使 emplace 函数超越插入函数成为可能的是他们更灵活的接口。插入函数需要插入对象，而 emplace 函数需要插入对象的构造函数参数。
+这种差异允许 emplace 函数来避免插入函数可能需要的临时对象的创建和销毁。
+由于容器所持有的类型的参数可以传递给 emplace 函数（参数因此导致函数执行复制或移动构造），所以即使插入函数不需要临时性，也可以使用 emplace。
+在这种情况下，插入和 emplace 基本上是一回事。例如，给出
+
+#+BEGIN_SRC C++
+  std::string queenOfDisco("Donna Summer");
+#+END_SRC
+以下两个调用都是有效的，并且对容器有相同的净效果：
+
+#+BEGIN_SRC C++
+  vs.push_back(queenOfDisco); // copy-construct queenOfDisco
+  // at end of vs
+  vs.emplace_back(queenOfDisco); // ditto
+#+END_SRC
+emplace 函数因此可以做一切插入功能。他们有时做得更有效，而且至少在理论上，他们不会更没效率。所以为什么不一直使用它们呢？
+
+因为，从理论上讲，理论和实践没有什么区别，但在实践中是有的。在标准库的当前实现中，如预期的那样，有些情况下 emplace 的性能优于插入，
+但是，不幸的是，还存在插入函数运行更快的情况。这种情况不容易表征，因为它们依赖于传递参数的类型，使用的容器，请求插入或 emplace 的容器中的位置，
+所包含类型的构造函数的异常安全性，以及容器 在重复的值被禁止（即，std::set，std::map，std::unordered_set，std::unordered_map）中，
+要添加的值是否已经在容器中。通常的性能调整建议因此适用：确定放置或插入是否运行得更快，并将两者进行基准测试。
+
+当然，这不是很令人满意，所以你会很高兴地发现，有一个启发式的方法可以帮助你确定哪些 emplace 函数最有可能是值得的。
+
+如果以下所有情况都是正确的，那么 emplace 几乎肯定会比插入更好：
++ 值是构造进容器，而不是赋值。打开这个 Item 的例子（在 std::vector 中增加一个 std::string 的值为“xyzzy”）显示了这个值被添加到了 vs 的结尾，还没有存在对象。因此新的值必须被构建到 std::vector 中。如果我们修改这个例子，使得新的 std::string 进入一个已经被一个对象占据的位置，这是一个不同的故事。 考虑：
+
+  #+BEGIN_SRC C++
+	std::vector<std::string> vs; // as before
+	… // add elements to vs
+	vs.emplace(vs.begin(), "xyzzy"); // add "xyzzy" to
+	// beginning of vs
+  #+END_SRC
+对于这个代码，很少有实现会将添加的 std::string 构造到由 vs [0]占用的内存中。相反，他们会移动 - 赋值。 但移动任务需要一个移动对象，这意味着需要创建一个临时对象作为移动的来源。
+由于放置主要优于插入的是既不创建也不销毁临时对象，当添加的值通过赋值放入容器时，放置的边缘趋于消失。
+唉，无论是增加一个容器的价值是通过构造或赋值来实现的，通常取决于实施者。 但是，启发式算法也可以帮助。
+基于节点的容器实际上总是使用结构来添加新的值，而大多数标准容器都是基于节点的。
+唯一不是的是 std::vector，std::deque 和 std::string。（std::array 也不是，但它不支持插入或放置，所以在这里没有关系。）
+在非基于节点的容器中，您可以依靠 emplace_back 来使用构造而不是赋值来获取新的值，对于 std::deque，emplace_front 也是如此。
++ 所传递的参数类型不同于容器所持有的类型。同样，插入的优势超过插入通常源于这样的事实，即当传递的参数是容器所持有的类型之外的类型时，其接口不需要创建和销毁临时对象。当一个 T 类型的对象被添加到一个容器<T>中时，没有理由期望放置运行的速度比插入要快，因为不需要创建临时的来满足插入接口。
++ 容器不可能因为重复而拒绝新的值。这意味着容器允许重复或者添加的大部分值都是唯一的。这很重要的原因是，为了检测一个值是否已经在容器中，放置实现通常使用新值创建一个节点，以便他们可以将该节点的值与现有的容器节点进行比较。如果要添加的值不在容器中，则节点被链接。但是，如果该值已经存在，则放置放弃并且节点被销毁，这意味着其构建和销毁的成本被浪费了。这些节点是为放置函数而创建的，而不是插入函数。
+本项目前面的调用满足上述所有条件。 它们也比相应的 push_back 调用运行得更快。
+
+#+BEGIN_SRC C++
+  vs.emplace_back("xyzzy"); // construct new value at end of
+  // container; don't pass the type in
+  // container; don't use container
+  // rejecting duplicates
+  vs.emplace_back(50, 'x'); // ditto
+#+END_SRC
+在决定是否使用放置函数时，还有两个问题需要记住。首先是关于资源管理。 假设你有一个 std::shared_ptr <Widget>的容器，
+
+#+BEGIN_SRC C++
+  std::list<std::shared_ptr<Widget>> ptrs;
+#+END_SRC
+你想添加一个 std::shared_ptr 应该通过定制的 deleter 释放（见 Item 19）。
+Item 21 解释说，你应该使用 std::make_shared 来创建 std::shared_ptrs，但也可以承认，在某些情况下你不能这样做。
+一种这样的情况是，当你想指定一个自定义的删除。在这种情况下，你必须直接使用 new 来获取被指向的原始指针的 std::shared_ptr 的。
+
+如果自定义的删除函数如下：
+
+#+BEGIN_SRC C++
+  void killWidget(Widget* pWidget);
+#+END_SRC
+使用插入函数的代码可能如下所示：
+
+#+BEGIN_SRC C++
+  ptrs.push_back(std::shared_ptr<Widget>(new Widget, killWidget));
+#+END_SRC
+它也可能是这样的，但意思是一样的：
+
+#+BEGIN_SRC C++
+  ptrs.push_back({ new Widget, killWidget });
+#+END_SRC
+不管怎样，在调用 push_back 之前，都会构造一个临时 std::shared_ptr。push_back 的参数是对 std::shared_ptr 的引用，
+所以必须有一个 std::shared_ptr 用于引用这个参数。
+
+临时 std::shared_ptr 的创建是 emplace_back 可以避免的，但是在这种情况下，临时值远远超过其成本。 考虑以下潜在的事件序列：
+1. 在上面的任何一个调用中，构造一个临时的 std::shared_ptr <Widget>对象来保存从“新的 Widget”产生的原始指针。 调用这个临时对象。
+2. push_back 通过引用获取 temp。 在分配一个列表节点来保存临时副本的过程中，会抛出一个内存不足的异常。
+3. 当异常传播出 push_back 时，temp 被销毁。 作为引用它所管理的 Widget 的唯一 std::shared_ptr，它自动释放该 Widget，在这种情况下通过调用 killWidget。
+即使发生异常，也不会泄漏：通过调用 push_back 中的“new Widget”创建的 Widget 在创建的 std::shared_ptr 的析构函数中释放，以便管理它（temp）。 生活很好。
+
+现在考虑如果调用 emplace_back 而不是 push_back 会发生什么情况：
+
+#+BEGIN_SRC C++
+  ptrs.emplace_back(new Widget, killWidget);
+#+END_SRC
+1. 从“新的 Widget”产生的原始指针完美转发到 emplace_back 内的一个列表节点将被分配的点。 该分配失败，并引发内存不足的异常。
+2. 当异常传播出 emplace_back 时，原始指针是唯一获取堆上的 Widget 的方法。 那个 Widget（和它拥有的任何资源）都被泄露了。
+在这种情况下，生活是不好的，故障不在于 std::shared_ptr。通过使用 std::unique_ptr 和定制的删除器，可能会出现同样的问题。 
+从根本上说，像 std::shared_ptr 和 std::unique_ptr 这样的资源管理类的有效性是以资源（比如来自 new 的 raw 指针）
+为基础被立即传递给构造函数的资源管理对象的。像 std::make_shared 和 std::make_unique 这样的函数实现这个功能是他们如此重要的原因之一。
+
+在调用持有资源管理对象（例如 std::list <std::shared_ptr <Widget>）的容器的插入函数时,
+函数的参数类型通常确保在获取资源（例如，使用新的）和构造管理资源的对象之间没有任何东西。
+在放置函数中，完美转发推迟资源管理对象的创建，直到它们可以在容器的内存中构建，并打开一个窗口，在这个窗口中异常会导致资源泄漏。
+所有的标准容器都容易出现这个问题.在处理资源管理对象的容器时，必须注意确保如果您通过插入对象选择了一个放置函数
+，那么您就不会为提高代码效率付出代价，同时减少异常的安全性。在处理资源管理对象的容器时，必须注意确保如果您通过插入对象选择了一个放置函数,
+您不需要为提高代码效率付出代价，同时减少异常安全性。
+
+坦率地说，不应该像“new Widget”这样将表达式传递给 emplace_back 或 push_back 或者大多数其他函数，
+因为正如 Item 21 所解释的那样，这导致了我们刚才所讨论的异常安全问题的可能性。
+关闭门需要从“new Widget”中获取指针并将其转到独立语句中的资源管理对象，然后将该对象作为右值传递给您最初想要传递“new Widget”的函数。
+(Item 21 项更详细地介绍了这一技术。)
+因此，使用 push_back 的代码应该更像这样写：
+
+#+BEGIN_SRC C++
+  std::shared_ptr<Widget> spw(new Widget, // create Widget and
+							  killWidget); // have spw manage it
+  ptrs.push_back(std::move(spw)); // add spw as rvalue
+#+END_SRC
+emplace_back 版本类似：
+
+#+BEGIN_SRC C++
+  std::shared_ptr<Widget> spw(new Widget, killWidget);
+  ptrs.emplace_back(std::move(spw));
+#+END_SRC
+无论哪种方式，这种方法产生了构造和销毁 spw 的成本。
+
+假设通过选择放置而不是插入的动机是为了避免容器所持有的类型的临时对象的成本，然而这在概念上是 spu 是什么，当你将资源管理对象添加到容器时，
+放置函数不可能超越插入函数，并且遵循正确的做法，确保在获取资源和将其转换为资源之间没有任何干预 管理对象。
+
+放置函数的第二个值得注意的方面是它们与显式构造函数的交互。
+为了纪念 C ++ 11 对正则表达式的支持，假设你创建了一个正则表达式对象的容器：
+
+#+BEGIN_SRC C++
+  std::vector<std::regex> regexes;
+#+END_SRC
+由于你的同事们为了检查自己的 Facebook 帐号而争吵不休，你不小心写下了下面这些看似毫无意义的代码：
+
+#+BEGIN_SRC C++
+  regexes.emplace_back(nullptr); // add nullptr to container
+  // of regexes?
+#+END_SRC
+您在输入时不会注意到错误，编译器会毫无怨言地接受代码，所以最终会浪费大量时间进行调试。
+在某些时候，你发现你已经在正则表达式的容器中插入了一个空指针。 但是这怎么可能呢？
+指针不是正则表达式，如果你试图做这样的事情
+
+#+BEGIN_SRC C++
+  std::regex r = nullptr; // error! won't compile
+#+END_SRC
+编译器会拒绝你的代码。有趣的是，如果您调用 push_back 而不是 emplace_back，他们也会拒绝它：
+
+#+BEGIN_SRC C++
+  regexes.push_back(nullptr); // error! won't compile
+#+END_SRC
+您遇到的好奇行为源于 std::regex 对象可以由字符串构造的事实。 这就是这样的有用代码是合法的：
+
+#+BEGIN_SRC C++
+  std::regex upperCaseWord("[A-Z]+");
+#+END_SRC
+从一个字符串创建一个 std::regex 可以确保一个相对较大的运行时间成本，所以，为了尽可能地避免这样的花费将被招致的可能性，
+采用 const char *指针的 std::regex 构造函数是显式的。这就是为什么这些行不能编译：
+
+#+BEGIN_SRC C++
+  std::regex r = nullptr; // error! won't compile
+  regexes.push_back(nullptr); // error! won't compile
+#+END_SRC
+在这两种情况下，我们都要求将指针隐式转换为 std::regex，而构造函数的显式性则阻止了这种转换。
+然而，在调用 emplace_back 的时候，我们并不是声称传递一个 std::regex 对象。相反，我们传递一个 std::regex 对象的构造函数参数。
+这不被视为隐式转换请求。.相反，它被看作是你写这个代码：
+
+#+BEGIN_SRC C++
+  std::regex r(nullptr); // compiles
+#+END_SRC
+如果简洁的评论“编译”暗示缺乏热情，那很好，因为这个代码虽然会编译，但却有不确定的行为。
+采用 const char *指针的 std::regex 构造函数要求指向的字符串包含一个有效的正则表达式，而空指针则不符合该要求。
+如果你编写和编译这样的代码，最好的希望是在运行时崩溃。如果你不那么幸运，你和你的调试器可能会有一个特殊的结合体验。
+暂时搁置 push_back，emplace_back，注意这些非常相似的初始化语法如何产生不同的结果：
+
+#+BEGIN_SRC C++
+  std::regex r1 = nullptr; // error! won't compile
+  std::regex r2(nullptr); // compiles
+#+END_SRC
+在标准的官方术语中，用于初始化 r1（使用等号）的语法对应于所谓的 *复制初始化* 。
+相比之下，用于初始化 r2 的语法（使用括号，但可以使用花括号）来产生所谓的 *直接初始化* 。
+复制初始化不允许使用 *显式构造函数* 。 直接初始化是。 这就是为什么初始化 r1 行不能编译，但初始化 r2 行。
+
+但回到 push_back 和 emplace_back，更一般地说，插入函数与放置函数。 放置函数使用直接初始化，这意味着他们可以使用显式的构造函数。
+插入函数使用复制初始化，所以他们不能。因此：
+
+#+BEGIN_SRC C++
+  regexes.emplace_back(nullptr); // compiles. Direct init permits
+  // use of explicit std::regex
+  // ctor taking a pointer
+  regexes.push_back(nullptr); // error! copy init forbids
+  // use of that ctor
+#+END_SRC
+当你使用放置函数的时候，特别要小心的是要确保你传递的是正确的参数，因为即使是显式的构造函数也会被编译器考虑，因为他们试图找到一种方法来解释你的代码是有效的。
+** 记住
++ 原则上，放置有时应比插入函数更有效率，而且不应该效率不高。
++ 在实际中，它们最有可能更快（1）值被构造进容器，而不是赋值（2）传递的参数类型与容器持有的类型不同（3）容器不会拒绝增加重复的值
++ 放置函数可以执行将被插入函数拒绝的类型转换。
+* 参考
+  原文：effective-modern-c++

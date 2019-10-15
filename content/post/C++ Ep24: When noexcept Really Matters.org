@@ -1,0 +1,100 @@
+#+TITLE: C++ Ep24: When noexcept Really Matters
+#+DATE: 2018-03-14
+#+LAYOUT: post
+#+TAGS: noexcept
+#+CATEGORIES: C++ Weekly
+
+    对于用户及编译器来说，预先知道某个函数不会抛出异常显然大有裨益。首先，知道
+函数不会抛出异常有助于简化调用该函数的代码；其次，如果编译器确认函数不会抛出异常，
+它就能执行某些特殊的优化操作，而这些优化操作并不适用于可能出错的代码。
+
+  在 C＋＋11 新标准中， *noexcept* 说明指定某个函数不会抛出异常。
+
+#+HTML: <!-- more -->
+#+BEGIN_SRC C++
+	#include <cstdio>
+	#include <vector>
+	#include <iostream>
+
+	struct S
+	{
+		S(int) {puts("S(int)");}
+		S(){puts("S()");}
+		S(const S&){puts("S(const S &)");}
+		S(S&&){puts("S(&&)");}
+		S &operator=(const S&) {puts("operator=(const S &)"); return *this;}
+		S &operator=(S &&){puts("operator=(S S&"); return *this;}
+		~S() {puts("~S()");}
+
+	};
+
+	int main()
+	{
+		std::vector<S> vec;
+		std::cout << "vec capacity:" << vec.capacity() << "\n";
+		vec.emplace_back(3);
+		std::cout << "vec capacity:" << vec.capacity() << "\n";
+		vec.emplace_back(3);
+		std::cout << "vec capacity:" << vec.capacity() << "\n";
+		vec.emplace_back(3);
+		std::cout << "vec capacity:" << vec.capacity() << "\n";
+	}
+#+END_SRC
+输出结果
+
+#+BEGIN_SRC dot
+	vec capacity:0
+	S(int)
+	vec capacity:1
+	S(int)
+	S(const S &)
+	~S()
+	vec capacity:2
+	S(int)
+	S(const S &)
+	S(const S &)
+	~S()
+	~S()
+	vec capacity:4
+	~S()
+	~S()
+	~S()
+#+END_SRC 
+可以从结果中看出，在 vector 中在扩充容量时使用了 copy construct 复制之前的数据。
+
+把 S 的构造函数都加上 noexcept 时
+
+#+BEGIN_SRC C++
+	struct S
+	{
+		S(int) noexcept {puts("S(int)");}
+		S() noexcept {puts("S()");}
+		S(const S&) noexcept {puts("S(const S &)");}
+		S(S&&) noexcept {puts("S(&&)");}
+		S &operator=(const S&) noexcept {puts("operator=(const S &)"); return *this;}
+		S &operator=(S &&) noexcept {puts("operator=(S S&"); return *this;}
+		~S() noexcept {puts("~S()");}
+
+	};
+#+END_SRC
+输出将变为
+
+#+BEGIN_SRC dot
+	vec capacity:0
+	S(int)
+	vec capacity:1
+	S(int)
+	S(&&)
+	~S()
+	vec capacity:2
+	S(int)
+	S(&&)
+	S(&&)
+	~S()
+	~S()
+	vec capacity:4
+	~S()
+	~S()
+	~S()
+#+END_SRC
+此时可以看出 vector 在扩充容量时使用了移动构造。即 noexcept 使用编译器可以进行了优化。

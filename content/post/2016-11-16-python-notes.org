@@ -1,0 +1,64 @@
+#+TITLE: python notes
+#+DATE: 2016-11-16
+#+LAYOUT: post
+#+CATEGORIES: notes
+#+TAGS: python 
+
+* yield
+
+**** yield 为生成器，有调用 next 或 send 来取值（只有调用这两个函数才会运行）
+**** 在 yield 处返回数据，用 send 来发送数据到程序内
+
+     #+BEGIN_SRC python
+       def h():
+           print 'Wen Chuan',
+           m = yield 5  # Fighting!
+           print m
+           d = yield 12
+           print 'We are together!'
+
+
+       if __name__ == '__main__':
+           c = h()
+           m = c.next()  #m 获取了 yield 5 的参数值 5
+           d = c.send('Fighting!')  #d 获取了 yield 12 的参数值 12
+           print 'We will never forget the date', m, '.', d
+     #+END_SRC
+
+{{{more}}}
+* DataFrame
+**** add row: df.loc[row_index] = [clo1, clo2, ...]
+**** 修改值：df.loc[row_index,col_indexer]
+**** 相同表追加用 append,但需要注意 append 不修改原表，而是生成新的表
+
+* requirements.txt
+**** 导出：pip freeze > requirements.txt
+**** 导入：pip install -r requirements.txt
+
+* coverage
+
+  #+BEGIN_SRC sh
+  coverage run --source=client,db,db_cache,http_server,main.py  --append main.py 
+  #+END_SRC
+
+* nose
+  
+  #+BEGIN_SRC sh
+    nosetests --with-coverage --cover-erase --cover-package=flask_encryptedsession --cover-html
+  #+END_SRC
+
+* Python 环境的默认编码
+**** 在 Lib/site-packages 下面增加 sitecustomize.py 文件：
+
+     #+BEGIN_SRC python
+       #!/usr/bin/env python
+       # -*- coding: UTF-8 -*-
+       import sys
+
+       reload(sys)
+       sys.setdefaultencoding('utf8')
+
+     #+END_SRC
+**** 上面方法，虽然可以全部 python 环境生效，不过在打包中还是会出现字符编码问题,解决方法把上面的 代码放到一个文件中，
+然后在，main.py 中 import,如创建__env__.py 文件.
+

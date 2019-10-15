@@ -1,0 +1,32 @@
+#+TITLE: Machine Learning(3) Neural Networks
+#+DATE: 2017-05-07
+#+CATEGORIES: ai
+#+TAGS: neural 
+
+* Model Representation
+** \text {If network has $s_j$ units in layer $j$ and $s_{j+1}$ units in layer $j+1$, then $\Theta^{(j)}$ will be of dimension $s_{j+1} \times (s_j + 1)$.}
+* Cost Function
+#+begin_verse
+Let's first define a few variables that we will need to use:
+L = total number of layers in the network
+$s_l$ = number of units (not counting bias unit) in layer l
+K = number of output units/classes
+#+end_verse
+\begin{gather*} J(\Theta) = - \frac{1}{m} \sum_{i=1}^m \sum_{k=1}^K \left[y^{(i)}_k \log ((h_\Theta (x^{(i)}))_k) + (1 - y^{(i)}_k)\log (1 - (h_\Theta(x^{(i)}))_k)\right] + \frac{\lambda}{2m}\sum_{l=1}^{L-1} \sum_{i=1}^{s_l} \sum_{j=1}^{s_{l+1}} ( \Theta_{j,i}^{(l)})^2\end{gather*}
+* Gradient Checking
+Gradient checking will assure that our backpropagation works as intended. We can approximate the derivative of our cost function with:
+$$\dfrac{\partial}{\partial\Theta}J(\Theta) \approx \dfrac{J(\Theta + \epsilon) - J(\Theta - \epsilon)}{2\epsilon}$$
+Hence, we are only adding or subtracting epsilon to the Θj matrix. In octave we can do it as follows:
+
+#+BEGIN_SRC octave
+  epsilon = 1e-4;
+  for i = 1:n,
+	thetaPlus = theta;
+	thetaPlus(i) += epsilon;
+	thetaMinus = theta;
+	thetaMinus(i) -= epsilon;
+	gradApprox(i) = (J(thetaPlus) - J(thetaMinus))/(2*epsilon)
+  end;
+#+END_SRC
+
+Once you have verified once that your backpropagation algorithm is correct, you don't need to compute gradApprox again. The code to compute gradApprox can be very slow.

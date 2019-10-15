@@ -1,0 +1,75 @@
+#+TITLE: C++ Ep02:auto
+#+DATE: 2017-12-21
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++
+#+CATEGORIES: Modern C++
+
+* item 5: 尽量用 auto 代替显式类型声明
+
+  #+BEGIN_SRC C++
+	std::unordered_map<std::string, int> m;
+	…
+	for (const std::pair<std::string, int>& p : m)
+	{
+		… // do something with p
+			}
+  #+END_SRC
+上面代码看起来很完美，但是有个问题。std::unordered_map 的 * key * 部分的类型是* const *修饰的，
+所以哈希表(std::unordered_map)中的 std::pair 类型不是 std::pair<std::string,int>，而是 std::pair<const std::string, int>。
+导致的结果是，编译器会把 std::pair<const std::string,int>对象强制转换为 std::pair<std::string,int>对象(也就是 p 声明的类型)。
+因此编译器为 m 哈希表中每一个元素的拷贝生成一个临时对象(key 为非 const 的 pair 类型)，然后 p 就引用了那些临时对象。当循环结束，那些临时对象被析构。
+#+HTML: <!-- more -->
+** 记住
++ auto 变量必须初始化，它通常不会类型不匹配，从而更轻便和更高效，还能减少重构的工作量，一般我们尽量用 auto 代替显式类型声明。
++ auto 类型变量会有 time 2 和条款 item 6 中的陷阱
+* item 6: 当 auto 推断出不想要的类型时，使用显示类型初始化语法
+
+  #+BEGIN_SRC C++
+	Widget w;
+	…
+	bool highPriority = features(w)[5]; // is w high priority?
+	…
+	processWidget(w, highPriority); // process w in accord
+	// with its priority
+
+
+	auto highPriority = features(w)[5]; // is w high priority?
+	processWidget(w, highPriority); // undefined behavior!
+  #+END_SRC
+上面代码令人吃惊的是，在使用 auto 的代码中，highPriority 的类型不再是 bool。
+尽管 std::vector<bool>概念上来说，包含了所有的布尔值，
+但是 std::vector<bool>的[]操作并没有返回一个其容器内部元素的引用
+（这就是我们所说的 std::vector<bool>给所有类型都返回元素引用，除了 bool）。
+相反地，它返回了一个类型为 std::vector<bool>::reference（一个内嵌于 std::vector<bool>的类）的对象。
+
+std::vector<bool>::reference 存在是因为 std::vector<bool>被设计成以打包形式来表示其内部布尔值，
+一个 bit 表示一个布尔值。那这就给 std::vector<bool>的[]带来问题了，
+因为 std::vector<T>的 operator[]操作本应该返回 T&的，但是 C++是禁止对 bit 引用。
+由于不能够返回一个 bool&，于是 std::vector<bool>的[]操作返回一个操作起来像 bool&的对象。
+为了使得操作顺利执行，std::vector<bool>::reference 必须能够在所有 bool&能够使用的上下文中也能够被使用。
+在 std::vector<bool>::reference 众多能够使得上面操作能够成功执行的特性中，有一个是对 bool 的隐性转换。
+（不是转换成 bool&，而是 bool).
+
+auto 所拥有的值取决于 std::vector<bool>::reference 是如何实现的。一种实现就是对于这种对象，
+让其保存一个指针指向存储真实比特的机器字，另外加上一个需要的比特在该字中的偏移量。
+
+对于 features 的调用返回一个临时 std::vector<bool>对象。该对象没有名字，但是为了本次讨论的需要，我们就叫它 temp。
+temp 的[]操作会触发，其返回的 std::vector<bool>::reference 中包含一个指针，
+指向 temp 内部数据结构的一个包含了所需要比特信息的字，另外还包含了一个针对该字的偏移量，指向第 5 个 bit。
+highPriority 只是 std::vector<bool>::reference 对象的的一个拷贝，
+所以 highPriority 也包含一个指针指向 temp 内部的那个字，外加上一个偏移量指向第 5 个 bit。
+在执行完该语句后，temp 被销毁，因为 temp 是一个临时对象。所以，highPriority 包含一个悬挂指针，
+而这正是 processWidget 调用中产生未定义行为的原因：
+
+#+BEGIN_SRC C++
+  auto highPriority = static_cast<bool>(features(w)[5]);
+#+END_SRC
+
+auto 没有推断出你想要它推断出来的类型。我们使用一种显式类型初始化语法，如上面的代码。
+** 记住
++ “不可见”的代理类会导致 auto 根据初始化表达式推断出“错误”的类型
++ 显式类型初始化语法强制 auto 推断出你想要它推断出的类型
+
+* 参考
+effective-modern-c++

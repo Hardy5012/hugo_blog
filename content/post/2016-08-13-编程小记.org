@@ -1,0 +1,10 @@
+#+TITLE: 编程小记
+#+DATE: 2016-08-13
+#+LAYOUT: post
+#+CATEGORIES: notes 
+#+TAGS: protobuf 
+
+* ProtoBuf
+** c++ protobuf 对 inner class 的修改，使用 mutable 来获取 inner class 指针
+
+{{{more}}}

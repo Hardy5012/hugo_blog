@@ -1,0 +1,188 @@
+#+TITLE: C++ Ep01:模板类型推导
+#+DATE: 2017-12-18
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++
+#+CATEGORIES:Modern C++
+
+
+* Case 1:ParmaType 是引用或指针，但不是 Universal Referencs
++  如果 expr 类型是一个引用，忽略引用部分
++  expr 的类型和 ParamType 模式匹配的部分决定了 T
+示例模板：
+
+#+BEGIN_SRC C++
+  template<typename T>
+  void f(T& param); // param is a reference
+#+END_SRC
+变量定义：
+
+#+BEGIN_SRC C++
+  int x = 27; // x is an int
+  const int cx = x; // cx is a const int
+  const int& rx = x; // rx is a reference to x as a const int
+#+END_SRC
+param 和 T 的推导：
+
+#+BEGIN_SRC C++
+  f(x); // T is int, param's type is int&
+  f(cx); // T is const int,
+		// param's type is const int&
+  f(rx); // T is const int,
+		// param's type is const int&
+#+END_SRC
+#+HTML: <!-- more -->
+
+#+BEGIN_SRC C++
+  template<typename T>
+  void f(const T& param); // param is now a ref-to-const
+  int x = 27; // as before
+  const int cx = x; // as before
+  const int& rx = x; // as before
+  f(x); // T is int, param's type is const int&
+  f(cx); // T is int, param's type is const int&
+  f(rx); // T is int, param's type is const int&
+#+END_SRC
+
+* Case 2:ParamType 是 Universal Reference
++  如果 expr 是个左值，T 和 ParamType 都被推导为左值引用。这里有两个地方不同寻常，第一，这是唯一一种场景下模板类型推导把 T 推导成一个引用。第二，尽管 ParamType 是使用了右值引用的语法来声明的，它的推导类型却是一个左值引用。
++  如果 expr 是个右值，则 Case 1 会适用。
+
+   #+BEGIN_SRC C++
+	 template<typename T>
+	 void f(T&& param); // param is now a universal reference
+
+	 int x = 27; // as before
+	 const int cx = x; // as before
+	 const int& rx = x; // as before
+
+	 f(x); // x is lvalue, so T is int&,
+		  // param's type is also int&
+	 f(cx); // cx is lvalue, so T is const int&,
+		 // param's type is also const int&
+	 f(rx); // rx is lvalue, so T is const int&,
+		  // param's type is also const int&
+	 f(27); // 27 is rvalue, so T is int,
+		   // param's type is therefore int&&
+   #+END_SRC
+* Case 3:ParamType 既不是指针也不是引用
+此时执行的是传值参数，这意味着无论传递什么，param 都会是个拷贝---一个新的对象
++  和之前一样，如果 expr 的类型是个引用，则引用部分被忽略。
++  如果忽略了引用部分后，expr 是一个 const 或 volatile，也都忽略。
+
+   #+BEGIN_SRC C++
+	 template<typename T>
+	 void f(T param); // param is now passed by value
+
+	 int x = 27; // as before
+	 const int cx = x; // as before
+	 const int& rx = x; // as before
+
+	 f(x); // T's and param's types are both int
+	 f(cx); // T's and param's types are again both int
+	 f(rx); // T's and param's types are still both int
+   #+END_SRC
+注意，即使 cx 和 rx 都表示 const 值，param 也不是常量。这也讲得通，param 是个完全独立于 cx 或 rx 的对象---是 cx 和 rx 的拷贝。cx 和 rx 不能被修改而 param 可以被修改。
+* 数组及函数参数
+在模板类型推导时，数组和函数参数会退化成指针，除非它们被用做初始化引用
+* Universal Reference
+当看起来像右值引用的 T&& 出现在 template 的中，他就是 universal reference，既不是 lvalue reference 也不是 rvalue reference。
+
+#+BEGIN_SRC dot
+  universal reference 的实际效果就是，你给他一个 lvalue reference 的时候，他就是 lvalue reference，你给他 rvalue reference 的时候，他就是 rvalue reference。
+#+END_SRC
+* auto 类型推导
+** auto 类型推导与模板规则类似,除大括号初始例如，auto 推导为 std::initializer_list 而模板则不支持
+   #+BEGIN_SRC C++
+	 auto x = { 11, 23, 9 }; // x's type is
+	 // std::initializer_list<int>
+
+	 template<typename T> // template with parameter
+	 void f(T param); // declaration equivalent to
+	 // x's declaration
+	 f({ 11, 23, 9 }); // error! can't deduce type for T
+
+	 template<typename T>
+	 void f(std::initializer_list<T> initList);
+	 f({ 11, 23, 9 }); // T deduced as int, and initList's
+	 // type is std::initializer_list<int>
+   #+END_SRC
+
+** auto 在函数返回及 lambda 参数时使用的是模板推导规则，而不是 auto 类型推导
+
+    #+BEGIN_SRC C++
+	 auto createInitList()
+	 {
+		 return { 1, 2, 3 }; // error: can't deduce type
+	 }
+
+	 std::vector<int> v;
+	 …
+	 auto resetV =
+	 [&v](const auto& newValue) { v = newValue; }; // C++14
+	 …
+	 resetV({ 1, 2, 3 }); // error! can't deduce type
+		 // for { 1, 2, 3 }
+   #+END_SRC
+* 理解 decltype
+auto 会自动把引用类型忽略，从而无法进行修改，如果我们希望这个函数返回的是真正的引用类型，则需要使用 decltype，显式表明返回类型。
+
+#+BEGIN_SRC C++
+  template<typename Container, typename Index> // C++14;
+  auto authAndAccess(Container& c, Index i) // not quite
+  { // correct
+	  authenticateUser();
+	  return c[i]; // return type deduced from c[i]
+  }
+
+  std::deque<int> d;
+  …
+  authAndAccess(d, 5) = 10; // authenticate user, return d[5],
+  // then assign 10 to it;
+  // this won't compile!
+
+  template<typename Container, typename Index> // C++14; works,
+  decltype(auto) // but still
+  authAndAccess(Container& c, Index i) // requires
+  { // refinement
+	  authenticateUser();
+	  return c[i];
+  }
+#+END_SRC
+auto 表明这个类型需要推导，decltype 表示推导使用 decltype 的方法，也就是根据他实际的类型来返回。
+
+对于左值表达示 decltype 返回的是左值的引用，这点与参数名有区别。
+
+#+BEGIN_SRC C++
+  int x = 0;
+  decltype(x) // is int
+  decltype((x)) //is therefore int&.
+#+END_SRC
+* 查看推导结果
++ 编译诊断
+灵活使用只声明未定义的模板
+
+#+BEGIN_SRC C++
+  template<typename T> // declaration only for TD;
+  class TD; // TD == "Type Displayer"
+
+  TD<decltype(x)> xType; // elicit errors containing
+  TD<decltype(y)> yType; // x's and y's types
+
+
+#+END_SRC
+
+#+BEGIN_SRC dot
+  error: 'xType' uses undefined class 'TD<int>'
+  error: 'yType' uses undefined class 'TD<const int *>'
+#+END_SRC
++ 运行时输出
+typeid 和 std::type_info::name，但有时并不准确。Boost TypeIndex（boost::typeindex::type_id_with_cvr）会更准确。
+
+#+BEGIN_SRC C++
+  std::cout << typeid(x).name() << '\n'; // display types for
+  std::cout << typeid(y).name() << '\n'; // x and y
+#+END_SRC
+
+* 参考
+effective-modern-c++

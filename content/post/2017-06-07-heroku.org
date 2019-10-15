@@ -1,0 +1,17 @@
+#+TITLE: HeroKu
+#+DATE: 2017-06-07
+#+CATEGORIES: notes
+#+TAGS: HeroKu
+
+* 安装
+
+  #+BEGIN_SRC sh
+    sudo yum install ruby gem
+    sudo gem install json_pure
+    sudo gem install  rails
+    sudo gem install bundler
+    sudo gem install heroku
+  #+END_SRC
+
+* 
+{{{more}}}

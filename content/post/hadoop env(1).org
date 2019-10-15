@@ -1,0 +1,312 @@
+#+TITLE: Hadoop HA env(1)
+#+DATE: 2019-09-26
+#+LAYOUT: post
+#+TAGS: Hadoop
+#+CATEGORIES: data
+
+* 整体架构
+** 概述
+	 从 Hadoop2.0 开始，HDFS NameNode 和 YARN ResourceManger(JobTracker 在 2.0 中已经被整合到 YARN ResourceManger 之中)
+ 的单点问题都得到了解决。HDFS NameNode 和 YARN ResourceManger 的基本原理是一样的， 
+HA 功能通过配置 Active/Standby 两个节点 实现在集群中对 节点的的热备来解决上述问题。
+具体[[https://data-flair.training/blogs/hadoop-hdfs-namenode-high-availability/]]
+** 规则
+ 本文只使用三台机器来测试
+ | 进程        | spark-master | spark-slave1 | spark-slave2 |
+ |-------------+--------------+--------------+--------------|
+ | NameNode    |active |standby   |              |
+ | DataNode    |       Y      |     Y        |         Y    |
+ | JournalNode |          Y   |   Y          |        Y     |
+ | Zookeeper   |      Y       |       Y      |      Y       |
+ | ZKFC        |        Y    |      Y       |              |
+ | ResourceManager|              |    Y         |          Y   |
+* 环境安装
+** 配置文件说明
+1. 修改 Hadoop 的核心配置文件 core-site.xml,主要是配置 HDFS 的地址和端口
+2. 修改 Hadoop 的 HDFS 的配置文件 hdfs-sit.xml,主要是配置 replication
+3. 修改 Hadoop 的 MapReduce 的配置文件 mapred-site.xml，主要是配置 JobTracker 的地址和端口
+** 配置 hosts 以及 SSH 免密登入
+** 安装 JDK
+** zookeeper 安装配置
+** hadoop 编译安装
+** hadoop 配置
+1. core-site.xml
+
+	 #+BEGIN_SRC dot
+		 <configuration>
+		 <property>
+		 <name>fs.default.name</name>
+		 <value>hdfs://192.168.15.196:9000</value>
+		 </property>
+		 <property>
+		 <name>fs.defaultFS</name>
+		 <value>hdfs://192.168.15.196:9000</value>
+		 </property>
+		 <property>
+		 <name>io.file.buffer.size</name>
+		 <value>131072</value>
+		 </property>
+		 <property>
+		 <name>hadoop.tmp.dir</name>
+		 <value>file:/home/xntrader/hadoop/tmp</value>
+		 <description>Abase for other temporary directories.</description>
+		 </property>
+		 <property>
+		 <name>ha.zookeeper.quorum</name>
+		 <value>spark-master:2181,spark-slave1:2181,spark-slave2:2181</value>
+		 </property>
+		 <property>
+		 <name>hadoop.proxyuser.hduser.hosts</name>
+		 <value>*</value>
+		 </property>
+		 <property>
+		 <name>hadoop.proxyuser.hduser.groups</name>
+		 <value>*</value>
+		 </property>
+		 </configuration>
+
+	 #+END_SRC
+2. hfds-site.xml
+
+	 #+BEGIN_SRC dot
+		 configuration>
+			 <!--property>
+				<name>dfs.namenode.secondary.http-address</name>
+				<value>192.168.15.196:9001</value>
+			 </property -->
+			 <property>
+				<name>dfs.namenode.name.dir</name>
+				<value>file:/home/xntrader/hadoop/name</value>
+			 </property>
+			 <property>
+				<name>dfs.datanode.data.dir</name>
+				<value>file:/home/xntrader/hadoop/data</value>
+			 </property>
+			 <!--指定 hdfs 的 nameservice 为 jed，需要和 core-site.xml 中保持一致-->
+				 <property>
+						 <name>dfs.nameservices</name>
+						 <value>jed</value>
+				 </property>
+
+				 <!-- jed 下面有两个 NameNode，分别是 nn1，nn2 -->
+				 <property>
+						 <name>dfs.ha.namenodes.jed</name>
+						 <value>nn1,nn2</value>
+				 </property>
+
+				 <!-- nn1 的 RPC 通信地址 -->
+				 <property>
+						 <name>dfs.namenode.rpc-address.jed.nn1</name>
+						 <value>spark-master:9000</value>
+				 </property>
+				 <!-- nn1 的 http 通信地址 -->
+				 <property>
+						 <name>dfs.namenode.http-address.jed.nn1</name>
+						 <value>spark-master:50070</value>
+				 </property>
+				 <!-- nn2 的 RPC 通信地址 -->
+				 <property>
+						 <name>dfs.namenode.rpc-address.jed.nn2</name>
+						 <value>spark-slave1:9000</value>
+				 </property>
+			<!-- nn2 的 http 通信地址 -->
+				 <property>
+						 <name>dfs.namenode.http-address.jed.nn1</name>
+						 <value>spark-slave1:50070</value>
+				 </property>
+
+				 <!-- 指定 NameNode 的 edits 元数据在 JournalNode 上的存放位置 -->
+				 <property>
+						 <name>dfs.namenode.shared.edits.dir</name>
+						 <value>qjournal://spark-master:8485;spark-slave1:8485;spark-slave2:8485/jed</value>
+				 </property>
+
+				 <!-- 指定 JournalNode 在本地磁盘存放数据的位置 -->
+				 <property>
+						 <name>dfs.journalnode.edits.dir</name>
+						 <value>/home/xntrader/hadoop/journaldata</value>
+				 </property>
+
+				 <!-- 开启 NameNode 失败自动切换 -->
+				 <property>
+						 <name>dfs.ha.automatic-failover.enabled</name>
+						 <value>true</value>
+				 </property>
+				 <!-- 配置失败自动切换实现方式 -->
+				 <!-- 此处配置较长，在安装的时候切记检查不要换行-->
+				 <property>
+						 <name>dfs.client.failover.proxy.provider.jed</name>
+						 <value>org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider</value>
+				 </property>
+
+				 <!-- 配置隔离机制方法，多个机制用换行分割，即每个机制占用一行-->
+				 <property>
+						 <name>dfs.ha.fencing.methods</name>
+						 <value>
+						 sshfence
+						 shell(usr/bin)
+						 </value>
+				 </property>
+
+				 <!-- 使用 sshfence 隔离机制时需要 ssh 免登陆 -->
+				 <property>
+						 <name>dfs.ha.fencing.ssh.private-key-files</name>
+						 <value>/root/.ssh/id_rsa</value>
+				 </property>
+
+				 <!-- 配置 sshfence 隔离机制超时时间(30s) -->
+				 <property>
+						 <name>dfs.ha.fencing.ssh.connect-timeout</name>
+						 <value>30000</value>
+				 </property>
+				 <property>
+				 <name>dfs.replication</name>
+				 <value>2</value>
+				 </property>
+				 <property>
+				 <name>dfs.webhdfs.enabled</name>
+				 <value>true</value>
+				 </property>
+				 <property>
+				 <name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+				 <value>false</value>
+				 </property>
+				 <property>
+				 <name>dfs.permissions.enabled</name>
+				 <value>false</value>
+				 </property>
+				 </configuration>
+
+	 #+END_SRC
+3. yarn-site.xml
+
+	 #+BEGIN_SRC css
+		 <configuration>
+			 <property>
+				 <name>yarn.nodemanager.aux-services</name>
+				 <value>mapreduce_shuffle</value>
+			 </property>
+			 <property>
+				 <name>yarn.nodemanager.aux-services.mapreduce.shuffle.class</name>
+				 <value>org.apache.hadoop.mapred.ShuffleHandler</value>
+			 </property>
+				 <!-- 开启 RM 高可用 -->
+				 <property>
+						 <name>yarn.resourcemanager.ha.enabled</name>
+						 <value>true</value>
+				 </property>
+
+				 <!-- 指定 RM 的 cluster id，可以自定义-->
+				 <property>
+						 <name>yarn.resourcemanager.cluster-id</name>
+						 <value>jyarn</value>
+				 </property>
+
+				 <!-- 指定 RM 的名字，可以自定义 -->
+				 <property>
+						 <name>yarn.resourcemanager.ha.rm-ids</name>
+						 <value>rm1,rm2</value>
+				 </property>
+
+				 <!-- 分别指定 RM 的地址 -->
+				 <property>
+						 <name>yarn.resourcemanager.hostname.rm1</name>
+						 <value>spark-slave1</value>
+				 </property>
+
+				 <property>
+						 <name>yarn.resourcemanager.hostname.rm2</name>
+						 <value>spark-slave2</value>
+				 </property>
+
+				 <!-- 指定 zk 集群地址 -->
+				 <property>
+						 <name>yarn.resourcemanager.zk-address</name>
+						 <value>spark-master:2181,spark-slave1:2181,spark-slave2:2181</value>
+				 </property>
+
+				 <!-- 开启 YARN 集群的日志聚合功能 -->
+				 <property>
+						 <name>yarn.log-aggregation-enable</name>
+						 <value>true</value>
+				 </property>
+
+	 #+END_SRC
+4. mapred-site.xml
+
+	 #+BEGIN_SRC dot
+		 <configuration>
+		 <property>
+		 <name>mapreduce.framework.name</name>
+		 <value>yarn</value>
+		 </property>
+		 <property>
+		 <name>mapreduce.jobhistory.address</name>
+		 <value>192.168.15.196:10020</value>
+		 </property>
+		 <property>
+		 <name>mapreduce.jobhistory.webapp.address</name>
+		 <value>192.168.15.196:19888</value>
+		 </property>
+		 </configuration>
+
+	 #+END_SRC
+5. slaves
+
+* 启动
+1. 启动 ZK
+在各个配置 ZK 的节点运行 
+
+#+BEGIN_SRC sh
+	zkServer.sh start
+
+#+END_SRC
+可借助命令 zkServer.sh status  查看各个 ZK 的从属关系
+
+2. 格式化 ZK（仅第一次需要做）
+任意 ZK 节点上执行：hdfs zkfc -formatZK
+
+3. 启动 ZKFC
+ZKFC（zookeeperFailoverController）是用来监控 NN 状态，协助实现主备 NN 切换的，所以仅仅在主备 NN 节点上启动就行。
+
+#+BEGIN_SRC sh
+	hadoop-daemon.sh start zkfc
+#+END_SRC
+
+4. 格式化主 NN（仅第一次需要做，后面请忽操作）
+
+	 #+BEGIN_SRC sh
+		 hdfs namenode -format
+	 #+END_SRC
+5. 在备 NN 上同步主 NN 的元数据信息
+
+	 #+BEGIN_SRC sh
+		 hdfs namenode -bootstrapStandby
+	 #+END_SRC
+6. 启动 hdsf
+
+	 #+BEGIN_SRC sh
+		 start-dfs.sh 
+	 #+END_SRC
+也可以单独启动：
+6.1 启动 NN hadoop-daemon.sh start namenode
+6.2 设置和确认主 NN hdfs haadmin -getServiceState nn1
+如果是配置手动切换 NN 的，这一步是不可缺少的，因为系统还不知道谁是主 NN，两个节点的 NN 都是 Standby 状态。手动激活主 NN 的命令：hdfs haadmin -transitionToActive nn1
+6.3 启动 datanode hadoop-daemons.sh start datanode
+7. 启动 yarn
+
+	 #+BEGIN_SRC sh
+		 /start-yarn.sh 
+	 #+END_SRC
+(spark-slave1 和 spark-slave2 的 resourcemanager 没有启动成功，需要后面单独启动)
+7.1 单独启动 ResourceManager yarn-daemon.sh start resourcemanager
+
+ResourceManager 也配置了 HA，根据命令查看节点状态：
+
+#+BEGIN_SRC sh
+	yarn rmadmin –getServiceState rm1
+#+END_SRC
+7.2 单独启动 nodemanager yarn-daemon.sh start nodemanager
+8. 启动 MR JobHistory Server mr-jobhistory-daemon.sh start historyserver
+9. JPS 查看名节点的进程运行情况
+

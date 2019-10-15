@@ -1,0 +1,67 @@
+#+TITLE: C++ Ep22: Fibonacci
+#+DATE: 2018-02-28
+#+LAYOUT: post
+#+TAGS: Fibonacci
+#+CATEGORIES: C++ Weekly
+
+  Fibonacci(斐波那契数)的特点是每一个数都是前二个数的和.以下测试都使用第 45 个值。
+* 递归版本
+
+  #+BEGIN_SRC C++
+	int fib(const int i)
+	{
+	  if(i == 0) return 0;
+	  if(i == 1) return 1;
+	  return fib(i - 1) + fib(i - 2);
+  
+	}
+  #+END_SRC
++ 文件大小：8.7K
++ 时间：7.4S
+#+HTML: <!-- more -->
+
+* 模板版本
+
+  #+BEGIN_SRC C++
+
+	template<int I>
+	struct Fib
+	{
+	  static const int val = Fib<I-1>::val + Fib<I-2>::val;
+  
+	};
+
+	template<>
+	struct Fib<0>
+	{
+	  static const int val = 0;
+
+	};
+
+	template<>
+	struct Fib<1>
+	{
+	  static const int val = 1;
+  
+	};
+  #+END_SRC
++ 文件大小：8.7K
++ 时间：0.002S
+* 新算法(Binet's Fibonacci Number Formula)
+
+  #+BEGIN_SRC C++
+	constexpr int fib(const int i)
+	{
+	  auto sqrt_5 = std::sqrt(5);
+	  if( i == 0) return 0;
+	  if(i == 1) return 1;
+
+	  return static_cast<int>((std::pow(1 + sqrt_5, i) - std::pow(i - sqrt_5, i)) / (std::pow(2, i ) * sqrt_5));
+  
+	}
+
+  #+END_SRC
++ 文件大小：9.3K
++ 时间：0.001S
+
+ 最后还是新算法更胜筹

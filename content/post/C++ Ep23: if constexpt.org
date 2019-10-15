@@ -1,0 +1,57 @@
+#+TITLE: C++ Ep23: constexpr if
+#+DATE: 2018-03-07
+#+LAYOUT: post
+#+TAGS: constexpr
+#+CATEGORIES: C++ Weekly
+
+    以 if constexpr 开始的语句被称为 *constexpr if* 语句，从 c++17 起支持。在 constexpr if 语句中，条件的值必须能语境地转换到
+bool 类型的 *常量表达式*。其值为 true，则舍去 false 分支语句 （若存在），否则舍去 true 分支语句 。示例：
+#+HTML: <!-- more -->
+#+BEGIN_SRC C++
+  #include<type_traits>
+  #include<iostream>
+
+  template<typename T>
+  auto print_type_info(const T &t)
+  {
+	if constexpr(std::is_integral<T>::value){
+		return t + 1;
+    
+	  } else if constexpr(std::is_floating_point<T>::value){
+		return t + 0.1;
+      
+	  } else{
+	  return t;
+    
+	}
+
+  }
+
+  int main()
+  {
+	std::cout << print_type_info(5) << "\n";
+	std::cout << print_type_info(4.3) << "\n";
+	std::cout << print_type_info("hello world") << "\n";
+  
+  }
+
+#+END_SRC
+在上面的例中，当传参 5 时。语句可看成：
+
+#+BEGIN_SRC C++
+  template<typename T>
+  auto print_type_info(const T &t)
+  {
+		return t + 1;
+
+  }
+#+END_SRC
+
+说明：
++ constexpr 整个条件语句都会执行，与普通的不同(如 && 在前面为 false 时会中断)。
++ 在被舍去语句中的 return 语句不参与函数返回类型推导
++ 被舍去语句可以 odr 使用不定义的变量
++ 若 constexpr if 语句出现于模板实体内，且若 条件 在实例化后不是值依赖的，则在实例化外围模板时不会实例化被舍去语句
++ 在模板外，被舍去语句受到完整的检查。if constexpr 不是 #if 预处理指令的替代品
+
+ 

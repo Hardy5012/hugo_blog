@@ -1,0 +1,188 @@
+#+TITLE: centos7 配置 service
+#+DATE: 2017-12-07
+#+LAYOUT: post
+#+TAGS: linux
+#+CATEGORIES: summary
+
+* 配置 service 文件
+** 在/usr/lib/systemd/system/目录创建自己的 service 文件 my.service
+
+   #+BEGIN_SRC dot
+	 [Unit]
+	 Description=infrec
+	 # Wants=systemd-user-sessions.service
+	 # After=systemd-user-sessions.service
+
+	 [Service]
+	 Environment="PATH=/home/lytz/.virtualenvs/xn_infrec/bin" "PYTHONPATH=.:/home/lytz/app/xn_InfRec/src:/home/lytz/app/rlib-py" "APP_SETTINGS=/home/lytz/app/xn_InfRec/src/config.py"
+	  #Sets the working directory for executed processes
+	 WorkingDirectory=/home/lytz/app/xn_InfRec/src/
+	 # Sets the Unix user that the processes are executed as
+	 User=lytz
+	 # Sets the highest scheduling priority for executed processes
+	 Nice=-20
+	 # disable OOM killing for this process
+	 OOMScoreAdjust=-1000
+	 ExecStartPre=/bin/echo ${PYTHONPATH}
+	 ExecStart=/home/lytz/.virtualenvs/xn_infrec/bin/gunicorn run:app --bind 0.0.0.0:9021 --worker-class sanic.worker.GunicornWorker -w 4 -t 180
+	 # systemd will send SIGTERM to all processes started from this service if we don't set ExecStop
+	 # ExecStop=-/bin/kill -15 $MAINPID
+	 Restart=on-failure
+	 RestartSec=15s
+	 # systemd-coredump will log the coredump including a backtrace if possible, and store the core (contents of process' memory contents) in an external file on disk in /var/lib/systemd/coredump or in current working directory
+	 # ulimit -c unlimited
+	 # echo "core.t%t.s%s.u%u" > /proc/sys/kernel/core_pattern
+	 # echo 1 > /proc/sys/fs/suid_dumpable
+	 # echo 1 > /proc/sys/kernel/core_uses_pid
+	 LimitCORE=infinity
+
+	 [Install]
+	 WantedBy=multi-user.target runlevel1.target runlevel2.target runlevel3.target runlevel4.target runlevel5.target
+   #+END_SRC
+#+HTML: <!-- more -->
+   1)  Unit 区块：启动顺序与依赖关系
+   Unit 区块的 Description 字段给出当前服务的简单描述，Documentation 字段给出文档位置
+#+begin_verse
+   After 字段：my.service 应该在 After 服务之后启动。相应地，还有一个 Before 字段，定义 my.service 应该在哪些服务之前启动。
+After 和 Before 字段只涉及启动顺序，不涉及依赖关系。
+   Wants 字段：表示存在"弱依赖"关系，即如果 wants.service 启动失败或停止运行，不影响 my.service 继续执行。Requires 字段则表示"强依赖"关系，
+即如果该服务启动失败或异常退出，那么 my.service 也必须退出。意，Wants 字段与 Requires 字段只涉及依赖关系，与启动顺序无关，默认情况下是同时启动的。
+#+end_verse
+ 2)  Service 区块：启动行为
+ - 启动命令
+#+begin_verse
+   EnvironmentFile 字段：指定当前服务的环境参数文件。该文件内部的 key=value 键值对，可以用$key 的形式，在当前配置文件中获取
+   Environment 字段：设置环境变量
+   WorkingDirectory 字段：指定工作目录
+   ExecStart 字段：定义启动进程时执行的命令。
+   ExecReload 字段：重启服务时执行的命令
+   ExecStop 字段：停止服务时执行的命令
+   ExecStartPre 字段：启动服务之前执行的命令
+   ExecStartPost 字段：启动服务之后执行的命令
+   ExecStopPost 字段：停止服务之后执行的命令
+#+end_verse
+所有的启动设置之前，都可以加上一个连词号（-），表示"抑制错误"，即发生错误的时候，不影响其他命令的执行。
+ - 启动类型
+ Type 字段定义启动类型。它可以设置的值如下
+#+begin_verse
+simple（默认值）：ExecStart 字段启动的进程为主进程
+forking：ExecStart 字段将以 fork()方式启动，此时父进程将会退出，子进程将成为主进程
+oneshot：类似于 simple，但只执行一次，Systemd 会等它执行完，才启动其他服务
+dbus：类似于 simple，但会等待 D-Bus 信号后启动
+notify：类似于 simple，启动结束后会发出通知信号，然后 Systemd 再启动其他服务
+idle：类似于 simple，但是要等到其他任务都执行完，才会启动该服务。一种使用场合是为让该服务的输出，不与其他服务的输出相混合
+#+end_verse
+ - 重启行为
+ KillMode 字段：定义 Systemd 如何停止服务,字段可以设置的值如下
+#+begin_verse
+control-group（默认值）：当前控制组里面的所有子进程，都会被杀掉
+process：只杀主进程
+mixed：主进程将收到 SIGTERM 信号，子进程收到 SIGKILL 信号
+none：没有进程会被杀掉，只是执行服务的 stop 命令。
+#+end_verse
+Restart 字段：定义了 sshd 退出后，Systemd 的重启方式
+#+begin_verse
+no（默认值）：退出后不会重启
+on-success：只有正常退出时（退出状态码为 0），才会重启
+on-failure：非正常退出时（退出状态码非 0），包括被信号终止和超时，才会重启
+on-abnormal：只有被信号终止和超时，才会重启
+on-abort：只有在收到没有捕捉到的信号终止时，才会重启
+on-watchdog：超时退出，才会重启
+always：不管是什么退出原因，总是重启
+#+end_verse
+RestartSec 字段：表示 Systemd 重启服务之前，需要等待的秒数
+ 3)  Install 区块
+Install 区块，定义如何安装这个配置文件，即怎样做到开机启动。WantedBy 字段：表示该服务所在的 Target。
+Target 的含义是服务组，表示一组服务。WantedBy=multi-user.target 指的是，my.service 所在的 Target 是 multi-user.target。
+
+这个设置非常重要，因为执行 systemctl enable sshd.service 命令时，sshd.service 的一个符号链接，
+就会放在/etc/systemd/system 目录下面的 multi-user.target.wants 子目录之中。
+上面的结果表示，默认的启动 Target 是 multi-user.target。在这个组里的所有服务，都将开机启动。
+这就是为什么 systemctl enable 命令能设置开机启动的原因。
+使用 Target 的时候，systemctl list-dependencies 命令和 systemctl isolate 命令也很有用
+
+#+BEGIN_SRC sh
+  # 查看 multi-user.target 包含的所有服务
+  systemctl list-dependencies multi-user.target
+
+  # 切换到另一个 target
+  # shutdown.target 就是关机状
+  sudo systemctl isolate shutdown.target
+#+END_SRC
+一般来说，常用的 Target 有两个：一个是 multi-user.target，表示多用户命令行状态；另一个是 graphical.target，表示图形用户状态，它依赖于 multi-user.target。
+官方文档有一张非常清晰的 [[[[https://www.freedesktop.org/software/systemd/man/bootup.html#System%20Manager%20Bootup]]][Target 依赖关系图]]
+** Target 的配置文件
+Target 也有自己的配置文件。
+
+#+BEGIN_SRC dot
+  #  This file is part of systemd.
+  #
+  #  systemd is free software; you can redistribute it and/or modify it
+  #  under the terms of the GNU Lesser General Public License as published by
+  #  the Free Software Foundation; either version 2.1 of the License, or
+  #  (at your option) any later version.
+
+  [Unit]
+  Description=Multi-User System
+  Documentation=man:systemd.special(7)
+  Requires=basic.target
+  Conflicts=rescue.service rescue.target
+  After=basic.target rescue.service rescue.target
+  AllowIsolate=yes
+
+  [Install]
+  Alias=default.target
+
+#+END_SRC
+#+begin_verse
+Requires 字段：要求 basic.target 一起运行。
+Conflicts 字段：冲突字段。如果 rescue.service 或 rescue.target 正在运行，multi-user.target 就不能运行，反之亦然。
+After：表示 multi-user.target 在 basic.target、rescue.service、rescue.target 之后启动，如果它们有启动的话。
+AllowIsolate：允许使用 systemctl isolate 命令切换到 multi-user.target。
+#+end_verse
+* systemct 命令
+
+  #+BEGIN_SRC sh
+	# 重新加载配置文件
+	sudo systemctl daemon-reload
+	# 重启相关服务
+	sudo systemctl restart my
+	#开机启动
+	sudo systemctl enable my
+	#启动服务
+	sudo systemctl start my
+	#服务的状态
+	sudo systemctl status my
+	#停止服务
+	sudo systemctl stop my
+  #+END_SRC
+ status 状态说明
+
+ #+BEGIN_SRC dot
+   infrec.service - infrec
+   Loaded: loaded (/usr/lib/systemd/system/infrec.service; enabled)
+   Active: active (running) since Thu 2017-12-07 13:38:16 CST; 1h 8min ago
+   Main PID: 13187 (gunicorn)
+   CGroup: /system.slice/infrec.service
+   ├─13187 /home/lytz/.virtualenvs/xn_infrec/bin/python3 /home/lytz/....
+   ├─13190 /home/lytz/.virtualenvs/xn_infrec/bin/python3 /home/lytz/....
+   ├─13198 /home/lytz/.virtualenvs/xn_infrec/bin/python3 /home/lytz/....
+   ├─13206 /home/lytz/.virtualenvs/xn_infrec/bin/python3 /home/lytz/....
+   └─13207 /home/lytz/.virtualenvs/xn_infrec/bin/python3 /home/lytz/....
+ #+END_SRC
+#+begin_verse
+Loaded 行：配置文件的位置，是否设为开机启动
+Active 行：表示正在运行
+Main PID 行：主进程 ID
+Status 行：由应用本身（这里是 httpd）提供的软件当前状态
+CGroup 块：应用的所有子进程
+日志块：应用的日志
+#+end_verse
+* Journalctl
+Journal 的实现归功于 journald 守护进程，其负责处理由内核、initrd 以及服务等产生的信息。要查看 journald 守护进程收集到的日志，可使用 journalctl 命令。
+** 按信息类型过滤
+ 1. 按单元,如查看上面的 my.service 日志
+
+	#+BEGIN_SRC sh
+	  journalctl -u my.service
+	#+END_SRC

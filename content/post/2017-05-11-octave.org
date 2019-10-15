@@ -1,0 +1,11 @@
+#+TITLE: octave
+#+DATE: 2017-05-11
+#+SETUPFILE: /home/huaming_li/github/blog/setupfile.org
+#+JEKYLL_LAYOUT: post
+#+JEKYLL_CATEGORIES: notes
+#+JEKYLL_TAGS: octave
+#+JEKYLL_PUBLISHED: true
+
+* 矩阵与标量＝＝运算，对矩阵所有值与标量进行判断，如果相等则为 1，不等则为 0
+
+{{{more}}}

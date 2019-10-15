@@ -1,0 +1,253 @@
+#+TITLE: C++ Ep19:The Concurrency API(4)
+#+DATE: 2018-02-02
+#+LAYOUT: post
+#+TAGS:
+#+CATEGORIES:
+
+* Item40: 对于并发使用 std :: atomic，对特殊的内存使用 volatile
+一旦构建了一个 std::atomic 对象，对它的操作就好像它们在一个受互斥体保护的临界区域内一样，但是操作通常是使用特殊的机器指令来实现的，
+这些指令比互斥体更高效。
+#+HTML: <!-- more -->
+
+#+BEGIN_SRC C++
+  std::atomic<int> ai(0); // initialize ai to 0
+  ai = 10; // atomically set ai to 10
+  std::cout << ai; // atomically read ai's value
+  ++ai; // atomically increment ai to 11
+  --ai; // atomically decrement ai to 10
+#+END_SRC
+在执行这些语句期间，其他读取 *ai* 的线程可能只会看到值 0,10 或 11.没有其他值是可能的（当然，假设这是唯一的线程修改 ai）。
+这里有两点需要注意：第一，在“std::cout << ai;”中，只有读 ai 的操作是原子的，整个语句不受原子保护。第二，ai 的自增，自减都是
+read-modify-write (*RMW*) 操作，它们的执行是原子的。这是 std::atomic 类型最好的特性之一：一旦构造了 std::atomic 对象，
+其上的所有成员函数，包括那些包含 RMW 操作的成员函数，都被保证被其他线程视为原子。
+
+相反，使用 volatile 的相应代码在多线程上下文中几乎没有任何保证：
+#+BEGIN_SRC C++
+  volatile int vi(0); // initialize vi to 0
+  vi = 10; // set vi to 10
+  std::cout << vi; // read vi's value
+  ++vi; // increment vi to 11
+  --vi; // decrement vi to 10
+#+END_SRC
+在执行这段代码期间，如果其他线程正在读取 vi 的值，他们可能会看到任何东西，例如-12，68，4090727-任何东西！
+这样的代码会有不确定的行为，因为这些语句修改了 vi，所以如果其他线程同时读取 vi，那么同时存在的读写内在既不是 std::atomic 也不是由互斥锁保护的，
+这就是 数据竞争。
+
+看 std::atomics 和 volatile 在多线程程序中有何不同的行为，可以考虑一个由多个线程递增的简单计数器。 我们将初始化为 0：
+
+#+BEGIN_SRC C++
+  std::atomic<int> ac(0); // "atomic counter"
+  volatile int vc(0); // "volatile counter"
+#+END_SRC
+然后，我们将在两个同时运行的线程中每次递增一个计数器：
+
+#+BEGIN_SRC C++
+  /*----- Thread 1 ----- */ /*------- Thread 2 ------- */
+  ++ac;                      ++ac;
+  ++vc;                      ++vc;
+#+END_SRC
+当两个线程都完成后，ac 的值（即 std::atomic 的值）必定是 2，因为每个增量都是作为不可分割的操作出现的。
+另一方面，vc 的值不一定是 2，因为它的自增可能不会原子地发生。
+每个自增包括读取 vc 的值，递增读取的值，并将结果写回 vc。
+但是对于 volatile 对像这个三操作不能保证原子进行，所以可能两个 vc 自增的组成部分是交错的，如下所示：
+1. 线程 1 读取 vc 的值，即 0。
+2. 线程 2 读取 vc 的值，它仍然是 0。
+3. 线程 1 将读取的 0 递增为 1，然后将该值写入 vc。
+4. 线程 2 将读取的 0 递增为 1，然后将该值写入 vc。
+因此 vc 的最终值是 1，尽管它增加了两次。
+
+这不是唯一可能的结果。vc 的最终值通常是不可预测的，因为 vc 涉及数据竞争，并且标准的规定数据竞争导致未定义的行为意味着编译器可以生成代码来完成任何事情。 
+当然，编译器不会使用这个余地。相反，它们执行的优化在没有数据竞争的程序中是有效的，而且这些优化在存在竞争的程序中产生意想不到的和不可预测的行为。
+
+RMW 并不是 std::atomics 并发成功而 volatile 失败的唯一情况。假设一个任务计算第二个任务所需的重要值。
+当第一个任务已经计算出这个值时，它必须把这个通知给第二个任务。
+第 39 项演示过，第一个任务将所需值的可用性传递给第二个任务的一种方法是使用 std::atomic <bool>。计算值任务的代码部分如下：
+
+#+BEGIN_SRC C++
+  std::atomic<bool> valAvailable(false);
+  auto imptValue = computeImportantValue(); // compute value
+  valAvailable = true; // tell other task
+  // it's available
+#+END_SRC
+当人类阅读这些代码时，我们知道在赋值为 valAvailable 之前赋值给 imptValue 是至关重要的，但是所有编译器看到的都是一对赋值给独立变量的赋值。
+作为一般规则，编译器可以重新排序这些不相关的任务。也就是说，给定这一系列的任务（其中 a，b，x 和 y 对应于独立变量）
+
+#+BEGIN_SRC C++
+  a = b;
+  x = y;
+#+END_SRC
+编译器通常可以按如下方式重新排列它们：
+
+#+BEGIN_SRC C++
+  x = y;
+  a = b;
+#+END_SRC
+即使编译器不对它们进行重新排序，底层硬件也可能会这样做，因为有时可能会使代码跑得更快。
+然而，std::atomics 的使用限制了代码的重新排序方式，一个这样的限制是，在源代码之前，
+在 std::atomic 变量的代码发生之后不会有写代码。这意味着在我们的代码中，
+
+#+BEGIN_SRC C++
+  auto imptValue = computeImportantValue(); // compute value
+  valAvailable = true; // tell other task
+  // it's available
+#+END_SRC
+不仅编译器必须将赋值顺序保留为 imptValue 和 valAvailable，还必须确保底层硬件生成的代码也是这样。
+因此，将 valAvailable 声明为 std::atomic 可以确保我们的关键排序要求-imptValue 必须不晚于 valAvailable 被所有线程看到。
+
+声明 valAvailable 为 volatile 不会强加这种重新排序限制：
+
+#+BEGIN_SRC C++
+  volatile bool valAvailable(false);
+  auto imptValue = computeImportantValue();
+  valAvailable = true; // other threads might see this assignment
+  // before the one to imptValue!
+#+END_SRC
+在这里，编译器可能会将赋值的顺序翻转为 imptValue 和 valAvailable，即使它们不这样做，也可能无法生成机器代码，
+从而阻止底层硬件使其他内核上的代码能够在 imptValue 之前看到 valAvailable 变更。
+
+这两个问题 - 无法保证操作的原子性和对代码重新排序的限制 - 解释了为什么 volatile 对于并发编程没有用处，
+但是并没有解释什么是有用的。 简而言之，就是告诉编译器他们正在处理不正常的内存。
+
+“正常”内存的特点是，如果你写一个值到一个内存位置，该值将保留在那里，直到重写它为止。 所以如果我有一个正常的 int，
+
+#+BEGIN_SRC C++
+  int x;
+#+END_SRC
+编译器在它上面看到下面的一系列操作
+
+#+BEGIN_SRC C++
+  auto y = x; // read x
+  y = x; // read x again
+#+END_SRC
+编译器可以通过消除对 y 的赋值来优化生成的代码，因为它在 y 的初始化中是多余的。
+
+普通内存还具有如下特性：如果向内存位置写入值，从来没有读取它，然后再次写入该内存位置，则可以消除第一次写入，因为它从未被使用。 所以鉴于这两个相邻的陈述，
+
+#+BEGIN_SRC C++
+  auto y = x; // read x
+  y = x; // read x again
+  x = 10; // write x
+  x = 20; // write x again
+#+END_SRC
+编译器可以把它看作是这样写的：
+
+#+BEGIN_SRC C++
+  auto y = x; // read x
+  x = 20; // write x
+#+END_SRC
+免得你想知道谁会编写执行这些冗余读取和多余写入的代码（技术上称为冗余加载和死存储），答案是人类不会直接编写代码 - 至少我们希望他们不要。
+但是，在编译器采用合理的源代码并执行模板实例化，内联以及各种常见的重新排序优化之后，编译器可以摆脱冗余加载和死存储的结果并不罕见。
+
+只有内存正常运行，这种优化才有效。“特殊”内存无效。 可能最常见的一种特殊内存是用于内存映射 I / O 的内存。
+这种存储器中的位置实际上与外围设备（例如外部传感器或显示器，打印机，网络端口等）通信，而不是读或写普通存储器（即 RAM）。 在这种情况下，再次考虑看似冗余的代码：
+
+#+BEGIN_SRC C++
+  auto y = x; // read x
+  y = x; // read x again
+#+END_SRC
+如果 x 对应于由温度传感器报告的值，则 x 的第二次读取不是多余的，因为在第一次读取和第二次读取之间温度可能已经改变。
+
+看似多余的写法也是类似的情况。 在这个代码中，例如，
+
+#+BEGIN_SRC C++
+  x = 10; // write x
+  x = 20; // write x again
+#+END_SRC
+如果 x 对应于无线电发射机的控制端口，则可能是代码向无线电发出命令，值 10 对应于与值 20 不同的命令。优化第一个分配将改变命令的顺序 发送到收音机。
+
+volatile 是我们告诉编译器我们正在处理特殊内存的方式。它对编译器的意义是“不要对这个内存上的操作进行任何优化”。所以如果 x 对应于特殊的内存，它会被声明为 volatile：
+
+#+BEGIN_SRC C++
+  volatile int x;
+#+END_SRC
+考虑一下对我们原始代码序列的影响：
+
+#+BEGIN_SRC C++
+  auto y = x; // read x
+  y = x; // read x again (can't be optimized away)
+  x = 10; // write x (can't be optimized away)
+  x = 20; // write x again
+#+END_SRC
+这正是我们想要的，如果 x 是内存映射（或已被映射到跨进程共享的内存位置等）。
+突然提问下！ 在最后一段代码中，y 的类型是什么：int 或 volatile int？
+（答案是 int, 在 item 2 中解释过 auto 对于非引用非指针类型（这是 y 的情况）的声明，const 和 volatile 限定符被丢弃。）
+
+顺便说一下，在处理特殊内存时，必须保留看起来多余的加载和死存储的事实，这就解释了为什么 std::atomics 不适合这种工作。
+在 std::atomics 上，编译器可以消除冗余操作。
+这些代码的编写方式与 volatile 的编写方式不尽相同，但是如果我们忽略了一段时间，关注编译器允许做的事情，我们可以这么说，编译器在概念上可能会采取这种做法，
+
+#+BEGIN_SRC C++
+  std::atomic<int> x;
+  auto y = x; // conceptually read x (see below)
+  y = x; // conceptually read x again (see below)
+  x = 10; // write x
+  x = 20; // write x again
+#+END_SRC
+并对其进行优化：
+
+#+BEGIN_SRC C++
+  auto y = x; // conceptually read x (see below)
+  x = 20; // write x
+#+END_SRC
+对于特殊的内存，这显然是不可接受的行为。
+
+现在，碰巧，当 x 是 std::atomic 时，这两个语句都不会被编译：
+
+#+BEGIN_SRC C++
+  auto y = x; // error!
+  y = x; // error!
+#+END_SRC
+这是因为 std::atomic 的复制操作被删除（见 Item 11）。并有很好的理由。考虑如果用 x 编译 y 的初始化会发生什么。
+因为 x 是 std::atomic，所以 y 的类型也会被推断为 std::atomic（见 item 2）。
+我之前说过 std::atomics 最好的一点是它们的所有操作都是原子操作，但是为了使 x 从 y 复制到原子，编译器必须生成代码来读取 x 并将 y 写入 一个单一的原子操作。
+硬件通常不能这样做，所以 std::atomic 类型不支持复制构造。
+由于相同的原因，复制赋值被删除，这就是为什么从 x 到 y 的赋值不能编译的原因。
+（移动操作没有在 std::atomic 中显式声明，因此，根据 Item 17 中描述的编译器生成的特殊函数的规则，std::atomic 不提供移动构建和移动赋值。）
+可以将 x 的值给 y，但是它需要使用 std::atomic 的成员函数 *load* 和 *store* 。
+load 成员函数以原子方式读取 std::atomic 的值，而 store 成员函数以原子方式写入它。
+要用 x 初始化 y，然后将 x 的值放在 y 中，代码必须如下所示：
+
+#+BEGIN_SRC C++
+  std::atomic<int> y(x.load()); // read x
+  y.store(x.load()); // read x again
+#+END_SRC
+但事实上, 这个编译，读 x（通过 x.load（））从初始化或存储到 y 是一个独立的函数调用， 清楚地表明，没有任何理由期望任何语句作为一个整体来执行作为一个单一的原子操作。
+
+给定代码，编译器可以通过将 x 的值存储在寄存器中来“优化”它，而不是两次读取它
+
+#+BEGIN_SRC C++
+  register = x.load(); // read x into register
+  std::atomic<int> y(register); // init y with register value
+  y.store(register); // store register value into y
+#+END_SRC
+如你所见，结果只能从 x 中读取一次，这种优化在处理特殊内存时是必须避免的。（不允许对 volatile 变量进行优化。）
+
+因此情况应该是清楚的：
++ std::atomic 对于并发编程非常有用，但不适用于访问特殊内存。
++ volatile 对于访问特殊内存很有用，但对于并发编程不是很有用。
+
+因为 std::atomic 和 volatile 有不同的用途，甚至可以一起使用：
+
+#+BEGIN_SRC C++
+  volatile std::atomic<int> vai; // operations on vai are
+  // atomic and can't be
+  // optimized away
+#+END_SRC
+如果 vai 对应于由多个线程同时访问的内存映射 I / O 位置，这可能是有用的。
+
+最后，有些开发人员更喜欢使用 std::atomic 的加载和存储成员函数，即使它们不是必需的，
+因为它在源代码中明确表示所涉及的变量不是“正常的”。强调事实并非如此 不合理。
+访问一个 std::atomic 通常比访问一个非 std::atomic 慢得多，
+我们已经看到 std::atomics 的使用会阻止编译器执行某些类型的代码重新排序，否则将被允许。
+调用 std::atomics 的加载和存储可以帮助识别潜在的可伸缩性阻塞点。
+从正确性的角度来看，没有看到一个调用来存储一个变量意味着传达信息到其他线程（例如，一个指示数据可用性的标志）可能意味着该变量没有被宣布为
+std::atomic 本来应该设置。
+
+然而，这在很大程度上是一个风格问题，因此与选择截然不同
+std::atomic 和 volatile 之间。
+** 记住
++ std::atomic 用于从多线程访问数据而不使用互斥锁。 这是编写并发软件的工具。
++ volatile 是内存的读写不应该被优化。 这是一个使用特殊内存的工具。
+
+* 参考
+  原文：effective-modern-c++

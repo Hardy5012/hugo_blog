@@ -1,0 +1,12 @@
+#+TITLE: makefile
+#+DATE: 2017-03-02
+#+LAYOUT: post
+#+CATEGORIES: notes
+#+TAGS: makefile
+
+*  undefined reference  问题
+** 多个库文件连接顺序问题
+在链接命令中给出所依赖的库时，需要注意库之间的依赖顺序，依赖其他库的库一定要放到被依赖库的前面，这样才能真正避免 undefined reference 的错误
+
+
+{{{more}}}

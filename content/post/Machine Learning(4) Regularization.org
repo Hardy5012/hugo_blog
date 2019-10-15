@@ -1,0 +1,56 @@
+#+TITLE: Machine Learning(4) Regularization
+#+DATE: 2017-05-17
+#+LAYOUT: post
+#+TAGS: Regularization
+#+CATEGORIES: ai
+
+正规化(Regularization)弱化的高阶项的系数，这弱化也称为对参数θ的惩罚（penalize）。
+* 线性回归中的正规化
+公式变为：
+\begin{gather*}
+J(\theta) &= \frac{1}{2m}\sum\limits_{i=1}^m(h_\theta(x^{(i)})-y^{(i)})^2+\lambda\sum\limits_{i=1}^{n}\theta_j^2 \\
+&= \frac{1}{2m}(X\theta-y)^T(X\theta-y)+\lambda\sum\limits_{i=1}^{n}\theta_j^2
+\end{gather*}
+其中，参数λ主要是完成以下两个任务:
++ 证对数据的拟合良好
++ 保证θ足够小，避免过拟合问题
+λ越大，要使 J(θ)变小，惩罚力度就要变大，这样θ会被惩罚得越惨（越小），即要避免过拟合，我们显然应当增大λ的值。
+
+梯度下降公式变为：
+Repeat{
+\begin{gather*}
+\theta_0 &=\theta_0-\alpha\frac{1}{m}\sum\limits_{i=1}^{m}(h_\theta(x^{(i)})-y^{(i)})x_0^{(i)} \\
+
+\theta_j &=\theta_j-\alpha\big(\frac{1}{m}\sum\limits_{i=1}^{m}(h_\theta(x^{(i)})-y^{(i)})x_j^{(i)}+\frac{\lambda}{m}\theta_j\big) \quad (1) \\
+
+\mbox {即：}& \\
+\theta &= \theta-\alpha*(\frac{1}{m} X^T(y-X\theta) + \frac{\lambda}{m}\theta_{j}) \quad j \neq 0
+
+\end{gather*}
+
+}
+其中，（1）式等价于：
+$$ \theta_j=\theta_j(1-\alpha\frac{\lambda}{m})-\alpha\frac{1}{m}\sum\limits_{i=1}^{m}[h_\theta(x^{(i)})-y^{(i)}]x_j^{(i)} $$
+由于 $ 1-\alpha\frac{\lambda}{m}\lt1 $，故而梯度下降中每次更新θ ，同时也会去减小θ值，达到了 Regularization 的目的。
+
+正规方程：
+$$ \theta=(X^TX+\lambda\left[\begin{array}{ccccc}0 &\cdots &\cdots &\cdots &0 \\ 0 &1 &\cdots &\cdots &0\\ \vdots & \vdots & 1 &\cdots & 0\\ \vdots &\vdots &\cdots &\ddots & \vdots \\ 0 & 0 &\cdots &\cdots &1 \end{array}\right])^{-1}X^Ty $$
+正规化同时可以解决矩阵不可逆的问题（ $X^TX$ 不可逆, $X^TX + \lambda.L$可逆）。
+* 逻辑回归中的正规化
+代价函数变为：
+\begin{gather*}
+J(\theta) &=\frac{1}{m}\sum\limits_{i=1}^{m}y^{(i)}logh_0(x^{(i)})+(1-y^{(i)})log(1-h_\theta(x^{(i)}))+\frac{\lambda}{2m}\sum\limits_{j=1}^{n}\theta_j^2 \\
+&=  \frac{1}{m}\big((\,log\,(g(X\theta))^Ty+(\,log\,(1-g(X\theta))^T(1-y)\big) + \frac{\lambda}{2m}\sum_{j=1}^{n}\theta_{j}^{2}
+
+\end{gather*}
+梯度下降如下:
+Repeat{
+\begin{gather*}
+\theta_0 &=\theta_0-\alpha\frac{1}{m}\sum\limits_{i=1}^{m}(h_\theta(x^{(i)})-y^{(i)})x_0^{(i)} \\
+
+\theta_j &=\theta_j-\alpha\big(\frac{1}{m}\sum\limits_{i=1}^{m}(h_\theta(x^{(i)})-y^{(i)})x_j^{(i)}+\frac{\lambda}{m}\theta_j\big) \\
+
+\mbox {即：}& \\
+\theta &= \theta - \alpha*(\frac{1}{m} X^T(y-g(X\theta)) + \frac{\lambda}{m}\theta_{j}) \quad j \neq 0
+\end{gather*}
+}

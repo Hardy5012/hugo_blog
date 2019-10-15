@@ -1,0 +1,18 @@
+#+TITLE: Machine Learning(1)Linear Regression
+#+DATE: 2017-04-21
+#+CATEGORIES: ai
+#+TAGS: linear regression
+
+* Hypothesis
+$$ h_\theta(x)=\theta_0+\theta_1x_1+\theta_2x_2+\dots+\theta_nx_n=\theta^Tx $$
+* Cost Function
+$$ J(\theta)=\frac{1}{2m}\sum\limits_{i=1}^{m}(h_\theta(x^{(i)})-y^{(i)})^2,\quad \mbox{$m$ 为样本数} $$
+#+HTML: <!-- more -->
+* Normal Equation
+$$ \theta = (X^TX)^{-1}X^Ty $$
+在特征值少于 1w 时则可以使用标准方程一次得解，但如果特征值过多时，需要使用梯度下降方程进行求解.
+标准方程的复杂度为$\mathrm{O}(n^3)$, 梯度下降为$\mathrm{O}(n^2)$
+
+ $(X^TX)^{-1}$  不可逆的情况：
++ 冗余的特征，如线性依赖
++ 太多特征，样本小于特征

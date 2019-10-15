@@ -1,0 +1,234 @@
+#+TITLE: C++ Ep16:The Concurrency API(1)
+#+DATE: 2018-01-15
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++ 
+#+CATEGORIES: Modern C++
+
+* Item 35:优先考虑基于任务编程，而不是线程编程
+如果你想异步地运行函数 doAsyncWork，你有两个基本的选择。你可以创建一个 std::thread，
+用它来运行 doAsyncWork，因此这是基于线程（ *thread-based* ）的方法：
+
+#+BEGIN_SRC C++
+  int doAsyncWork();
+  std::thread t(doAsyncWork);
+#+END_SRC
+或者你把 doAsynWork 传递给 std::async，一个叫做基于任务（ *task-based* ）的策略：
+
+#+BEGIN_SRC C++
+  auto fut = std::async(doAsyncWork); // "fut" for "future"
+#+END_SRC
+在这种调用中，传递给 std::async 的函数对象被认为是一个任务（task）。
+#+HTML: <!-- more -->
+基于任务的方法通常比基于线程实现的相对物要好，我们看到基于任务的方法代码量更少，这已经是展示了一些原因了。在这里，doAsyncWork 会返回一个值，
+我们有理由假定调用 doAsyncWork 的代码对这个返回值有兴趣。在基于线程的调用中，没有直接的办法获取到它；而在基于任务的调用中，这很容易，
+因为 std::asyn 返回的 future 提供了一个函数 *get* 来获取返回值。如果 doAsyncWork 函数发出了一个异常，get 函数是很重要的，它能取到这个异常。
+在基于线程的方法中，如果 doAsyncWork 抛出了异常，程序就死亡了（通过调用 std::terminate）。
+
+基于线程编程和基于任务编程的一个更基础的区别是，基于任务编程表现出更高级别的抽象。它让你免受线程管理的细节，
+这让我想起了我需要总结“线程”在 C++并发软件里的三个意思：
++  *硬件线程* 是一种负责计算的线程。现代机器体系结构为每个 CPU 核心提供一个或多个硬件线程。
++  *软件线程* （又称为操作系统线程或系统线程）是由操作系统管理和为硬件线程进行调度的线程。软件线程创建的数量通常会比硬件线程多，因为当一个软件线程阻塞了（例如，I/O 操作，等待锁或者条件变量），运行另一个非阻塞的线程能提供吞吐率。
++  *std::thread* 是 C++进程里的对象，它在自身内部操作软件线程。一些 std::thread 对象表示为“null”句柄，相当于不持有软件线程，因为它们处于默认构造状态（因此没有需要执行的函数），它要么被移动过了（那么，移动操作的目的 std::thread 对象会操作软件线程），要么被 join 了（std::thread 对象要执行的函数运行结束），要么被 detach 了（std::thread 对象和它内部软件线程的连接被切断了，即 thread 对象和软件线程分离了）。
+软件线程是一种受限的资源，如果你想创建的线程数量多于系统提供的数量，会抛出 *std::system_error* 异常。就算你规定函数不能抛出异常，这个异常也会抛出。
+例如，就算你把 doAsyncWork 声明为 noexcept，
+
+#+BEGIN_SRC C++
+  int doAsyncWork() noexcept; // see Item 14 for noexcept
+#+END_SRC
+这语句还是可能会抛出异常：
+
+#+BEGIN_SRC C++
+  std::thread t(doAsyncWork); // throws if no more
+  // threads are available
+#+END_SRC
+写得好的软件必须想个办法解决这个可能性，但如何解决呢？一个办法是在当前线程运行 doAsyncWork，但这会导致负载不均衡的问题，
+而且，如果当前线程是个 GUI 线程，会导致响应时间变长。另一个方法是等待某些已存在的软件线程完成工作，然后再尝试创建一个新的 std::thread 对象，
+但是有可能发生这种事情：已存在的线程在等待 doAsyncWork 的处理（例如，doAsyncWorkd 的返回值，或者通知条件变量）。
+
+即使你的没有用完线程，你还是会有 *oversubscription* （过载）的问题——当就绪状态（即非阻塞）的软件线程多于硬件线程的时候。如果发生了那种事，
+调度线程（通常是操作系统的一部分）会为软件线程分配 CPU 时间片，一个线程的时间片用完，就运行另一个线程，这其中发生了上下文切换。
+这种上下文切换会增加系统的线程管理开销。这种情况下，（1）CPU 缓存会持有那个软件线程（即，它们会含有对于那软件线程有用的一些数据和一些指令），
+而（2）CPU 核心上“新”运行的软件线程“污染”了 CPU 缓存上“旧的”线程数据（它曾经在该 CPU 核心运行过，且可能再次调度到该 CPU 核心运行）。
+
+避免 oversubscription 是很困难的，因为软件系统和硬件线程的最佳比例是取决于软件线程多久需要执行一次，而这是会动态改变的，
+例如，当一个线程从 IO 消耗型转换为 CPU 消耗型时。这最佳比例也取决于上下文切换的开销和软件线程使用 CPU 缓存的效率。再进一步说，
+硬件线程的数量和 CPU 缓存的细节（例如，缓存多大和多快）是取决于机器的体系结构，所以即使你在一个平台上让你的应用避免了
+oversubscription（保持硬件繁忙工作），也不能保证在另一种机器上你的方案能工作得好。
+
+如果你把这些问题扔给某个人去做，你的生活就很惬意啦，然后使用 std::async 就能显式地做这件事：
+
+#+BEGIN_SRC C++
+  auto fut = std::async(doAsyncWork); // onus of thread mgmt is
+  // on implementer of
+  // the Standard Library
+#+END_SRC
+
+这个调用把线程管理的责任转交给 C++标准库的实现者。例如，得到线程超标的异常的可能性绝大幅度减少，因为这个调用可能从不产生这个异常。
+“它是怎样做到的呢？”你可能好奇，“如果我申请多于系统提供的线程，使用 std::thread 和使用 std::async 有区别吗？”答案是有区别，
+因为当用默认发射策略（看条款 36）调用 std::async 时，不能保证它会创建一个新的软件线程。而且，它允许调度器把指定函数（例如，doAsyncWork）
+运行在——请求 doAsyncWork 结果的线程中（例如，那个线程调用了 get 或者对 fut 使用 wait），如果系统 oversubsrcibed 或线程耗尽时，
+合理的调度器可以利用这个优势
+
+如果你想用“在需求函数结果的线程上运行该函数”来欺骗自己，我提起过这会导致负载均衡的问题，这问题不会消失，
+只是由 std::async 和调度器来面对它们，而不是你。但是，当涉及到负载均衡问题时，调度器比你更加了解当前机器发生了什么，
+因为它管理所有进程的线程，而不是只是你的代码。
+
+使用 std::async，GUI 线程的响应性也是有问题的，因为调度器没有办法知道哪个线程需求紧凑的响应性。在这种情况下，
+你可以把 *std::lanuch::async* 发射策略传递给 std::async，它那可以保证你想要运行的函数马上会在另一个线程中执行（看条款 36）。
+
+最新技术水平的线程调度器使用了系统范围的线程池来避免 oversubscription，而且调度器通过工作窃取算法来提高了硬件核心的负载均衡能力。
+C++标准库没有要求线程池或者工作窃取算法，而且，实话说，C++11 并发技术的一些实现细节让我们很难利用到它们。
+但是，一些供应商会在它们的标准库实现中利用这种技术，所以我们有理由期待 C++并发库会继续进步。如果你使用基于任务的方法进行编程，当它以后变智能了，
+你会自动获取到好处。另一方面，如果你直接使用 std::thread 进行编程，你要承担着处理线程耗尽、oversubscription、负载均衡的压力，
+更不用提你在程序中对这些问题的处理方案能否应用在同一台机器的另一个进程上。
+
+比起基于线程编程，基于任务的设计能分担你的线程管理之痛，而且它提供了一种很自然的方式，让你检查异步执行函数的结果（即，返回值或异常）。
+但是，有几种情况直接使用 std::thread 更适合，它们包括
++ 你需要使用内部的特定平台线程的 API。C++并发 API 通常是以特定平台的低级 API 实现的，通常使用 pthread 或 Window’s Thread。它们提供的 API 比 C++提供的要多（例如，C++没有线程优先级的概念）。为了获取内部线程实现的 API，std::thread 对象有一个 native_handle 成员函数，而 std::future（即 std::async 返回的类型）没有类似的东西。
++ 你需要且能够在你的应用中优化线程的用法。例如，你要在一个固定的机器平台上部署一个单进程的服务器软件。
++ 你需要在 C++并发 API 之上实现线程技术。例如，实现一个 C++不提供的线程池。
+不过，这些都是不常见的情况。大多数时候，你应该选择基于任务的设计，来代替线程。
+** 记住
++ std::thread 的 API 没有提供直接获取异步运行函数返回值的方法，而且，如果这些函数抛出异常，程序会被终止。
++ 基于线程编程需要手动地管理：线程耗尽、oversubscription、负载均衡、适配新平台。
++ 借助默认发射策略的 std::async，进行基于任务编程可以解决上面提到的大部分问题
+* Item 36:如果异步执行是必需的，指定 std::launch::async 策略
+当你调用 std::async 来执行一个函数（或一个可执行对象）时，你通常希望函数是异步执行的。但你没有要求 std::async 必须这样做，
+函数是根据 std::async 的发射策略（ *launch policy* ）来执行的。有两个标准策略，每个都是通过 std::launch 局部枚举（scoped enum， 看条款 10）
+来表示。假设一个函数 f 要传递给 std::launch 执行，
++ *std::launch::async* 发射策略意味着函数 f 必须异步执行，即在另一线程执行。
++ *std::launch::deferred* 发射策略意味着函数 f 可能只会在——std::async 返回的 future 对象调用  *get*  或 *wait*  时——执行。那就是，执行会推迟到其中一个调用发生。当调用 get 或 wait 时，f 会同步执行，即，调用者会阻塞直到 f 运行结束。如果 get 或 wait 没有被调用，f 就绝对不会执行。
+可能很奇怪，std::async 的默认发射策略——它的默认策略是你不能显式指定的——不是两者其中的一种，相反，是两者进行或运算。下面两个函数完全是相同的意思：
+
+#+BEGIN_SRC C++
+  auto fut1 = std::async(f); // run f using
+  // default launch
+  // policy
+  auto fut2 = std::async(std::launch::async | // run f either
+						 std::launch::deferred, // async or
+						 f); // deferred
+#+END_SRC
+默认的发射策略允许异步或同步执行函数 f，就如条款 35 指出，这个灵活性让 std::async 与标准库的线程管理组件一起承担线程创建和销毁、避免过载、
+负责均衡的责任。这让用 std::async 进行并发编程变得很方便。
+
+但用 std::async 的默认发射策略会有一些有趣的含义。这语句给定一个线程 t 执行 f，
+
+#+BEGIN_SRC C++
+  auto fut = std::async(f); // run f using default launch policy
+#+END_SRC
++ 没有办法预知函数 f 是否会和线程 t 并发执行，因为 f 可能会被调度为推迟执行。
++ 没有办法预知函数 f 是否运行在——与调用 get 或 wait 函数的线程不同的——线程。如果那个线程是 t，这句话的含义是没有办法预知 f 是否会运行在与 t 不同的线程
++ 可能没有办法预知函数 f 是否执行完全，因为没有办法保证 fut 会调用 get 或 wait。 
+默认发射策略的调度灵活性经常会混淆使用 *thread_local* 变量，这意味着如果 f 写或读这种线程本地存储(Thread Local Storage，TLS)，预知取到哪个线程的本地变量是不可能的：
+
+#+BEGIN_SRC C++
+  auto fut = std::async(f); // TLS for f possibly for
+  // independent thread, but
+  // possibly for thread
+  // invoking get or wait on fut
+#+END_SRC
+它也影响了基于 wait 循环中的超时情况，因为对一个推迟（策略为 deferred）的任务（看条款 35）调用 *wait_for* 或者 *wait_until* 
+会返回值 *std::launch::deferred* 。这意味着下面的循环，看起来最终会停止，但是，实际上可能会一直运行：
+
+#+BEGIN_SRC C++
+  using namespace std::literals; // for C++14 duration
+  // suffixes; see Item 34
+  void f() // f sleeps for 1 second,
+  { // then returns
+	  std::this_thread::sleep_for(1s);
+  }
+  auto fut = std::async(f); // run f asynchronously
+  // (conceptually)
+  while (fut.wait_for(100ms) != // loop until f has
+		 std::future_status::ready) // finished running...
+  { // which may never happen!
+	  …
+		  }
+#+END_SRC
+如果 f 与调用 std::async 的线程并发执行（即，使用 std::launch::async 发射策略），这里就没有问题（假设 f 能结束执行，不会一直死循环）。
+但如果 f 被推迟（deferred）， *fut.wait_for* 将总是返回 *std::future_status::deferred* (需要调用 get 或 wait 来执行)。
+那永远也不会等于 std::future_status::ready，所以循环永远不会终止。
+
+这种 bug 在开发或单元测试中很容易被忽略，因为它只会在机器负载很重时才会显现。在机器过载（oversubscription）或线程消耗完的状况下，
+任务很可能会被推迟（如果使用的是默认发射策略）。总之，如果不是过载或者线程耗尽，运行系统没有理由不调度任务并发执行。
+
+解决办法很简单：检查 std::async 返回的 future，看它是否把任务推迟，然后呢，如果真的是那样，就避免进入基于超时的循环。
+不幸的是，没有办法直接询问 future 的任务是否被推迟。取而代之的是，你必须调用一个基于超时的函数——例如 wait_for 函数。在这种情况下，
+你不用等待任何事情，你只是要看看返回值是否为 std::future_status::deferred，所以请相信这迂回的话语和用 0 来调用  *wait_for* ：
+
+#+BEGIN_SRC C++
+  auto fut = std::async(f); // as above
+  if (fut.wait_for(0s) == // if task is
+	  std::future_status::deferred) // deferred...
+  {
+  // ...use wait or get on fut
+	  … // to call f synchronously
+		  } else { // task isn't deferred
+	  while (fut.wait_for(100ms) != // infinite loop not
+			 std::future_status::ready) { // possible (assuming
+  // f finishes)
+		  … // task is neither deferred nor ready,
+  // so do concurrent work until it's ready
+			  }
+	  … // fut is ready
+		  }
+#+END_SRC
+考虑多种因素的结论是，只要满足了下面的条件，以默认发射策略对任务使用 std::async 能正常工作：
++ 任务不需要与调用 get 或 wait 的线程并发执行。
++ 修改哪个线程的 thread_local 变量都没关系。
++ 要么保证 std::async 返回的 future 会调用 get 或 wait，要么你能接受任务可能永远都不执行。
++ 使用 wait_for 或 wait_unitil 的代码要考虑到任务推迟的可能性。
+如果其中一个条件没有满足，你很可能是想要确保任务能异步执行。而那样做的方法是，当你调用 std::async 时，把 std::launch::async 作为第一个参数传递给它：
+
+#+BEGIN_SRC C++
+  auto fut = std::async(std::launch::async, f); // launch f
+  // asynchronously
+#+END_SRC
+事实上， 如果有一个函数的行为像 std::async 那样，但它会自动使用 std::launch::async 作为发射策略，
+那样就是一个方便的工作啦！它很容易写出来，棒极了。这是 C++11 的版本：
+
+#+BEGIN_SRC C++
+  template<typename F, typename... Ts>
+  inline
+  std::future<typename std::result_of<F(Ts...)>::type>
+  reallyAsync(F&& f, Ts&&... params) // return future
+  { // for asynchronous
+	  return std::async(std::launch::async, // call to f(params...)
+						std::forward<F>(f),
+						std::forward<Ts>(params)...);
+  }
+#+END_SRC
+这个函数接收一个可调用对象 f 和零个或多个参数 params，并且把它们完美转发（看条款 25）给 std::async，传递 std::launch::async 作为发射策略。
+就像 std::async 那样，它返回一个类型为 f 调用 params 的结果的 std::future，决定这个结果很容易，因为 *std::result_of* 这个 
+type trait 可以把结果给你。
+
+reallyAsync 用起来就像 std::async 那样：
+
+#+BEGIN_SRC C++
+  auto fut = reallyAsync(f); // run f asynchronously;
+  // throw if std::async
+  // would throw
+#+END_SRC
+在 C++14 中，推断 reallyAsync 返回值类型的能力简化了函数声明：
+
+#+BEGIN_SRC C++
+  template<typename F, typename... Ts>
+  inline
+  auto // C++14
+  reallyAsync(F&& f, Ts&&... params)
+  {
+	  return std::async(std::launch::async,
+						std::forward<F>(f),
+						std::forward<Ts>(params)...);
+  }
+#+END_SRC
+这个版本很清楚地让你知道 reallyAsync 除了使用 std::launch::async 发射策略调用 std::async 外，没做任何东西。
+** 记住
++ std::async 的默认发射策略既允许任务异步执行，又允许任务同步执行。
++ 这个灵活性（上一点）导致了使用 thread_local 变量时的不确定性，它隐含着任务可能不会执行，它还影响了基于超时的 wait 调用的程序逻辑。
++ 如果异步执行是必需的，指定 std::launch::async 发射策略。
+* 参考
+  原文：effective-modern-c++
+  翻译：http://blog.csdn.net/big_yellow_duck/article/category/635234
+

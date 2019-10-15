@@ -1,0 +1,283 @@
+#+TITLE: C++ Ep08:Smart Pointers(3)
+#+DATE: 2018-01-03
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++
+#+CATEGORIES: Modern C++
+
+* Item 22:当使用 Pimpl 机制时，在实现文件中给出特殊成员函数的实现
+如果你曾经同过久的编译时间斗争过，那么你肯定对 Pimpl（"point to implementation",指向实现）机制很熟悉了。这种技术让你把类的数据成员替换成指向一个实现类（或结构）的指针，
+把曾经放在主类中的数据成员放到实现类中去，然后通过指针间接地访问那些数据成员。举个例子，假设 Widget 看起来像这个样子：
+
+#+BEGIN_SRC C++
+  class Widget { // in header "widget.h"
+  public:
+	  Widget();
+	  …
+	  private:
+	  std::string name;
+	  std::vector<double> data;
+	  Gadget g1, g2, g3; // Gadget is some user-
+  };
+#+END_SRC
+因为 Widget 的数据成员包含 std::string，std::vector 和 Gadget 类型，这些类型的头文件必须出现在 Widget 的编译中，
+这就意味着 Widget 的客户必须#include <string>,<vector>,和 gadget.h。这些头文件增加了 Widget 客户的编译时间，
+加上它们使得这些客户依赖于头文件的内容。如果头文件的内容改变了，Widget 的客户必须重编译。标准头文件<string>和<vector>不会经常改变，
+但是 gadget.h 有频繁更替版本的倾向。
+#+HTML: <!-- more -->
+在 C++98 中应用 Pimpl 机制需要在 Widget 中把它的数据成员替换成一个原始指针，指向一个已经被声明却还没有定义的结构：
+
+#+BEGIN_SRC C++
+  class Widget { // still in header "widget.h"
+  public:
+	  Widget();
+	  ~Widget(); // dtor is needed—see below
+	  …
+	  private:
+	  struct Impl; // declare implementation struct
+	  Impl *pImpl; // and pointer to it
+  };
+#+END_SRC
+因为 Widget 不在涉及类型 std::string, std::vector 和 Gadget，所以 Widget 的客户不再需要#include 这些类型的头文件了。
+这加快了编译速度，并且这也意味着如果头文件有了一些变化，Widget 的客户是不受影响的。
+
+一个被声明却还没有定义的类型被称为一个 *不完整类型* （incomplete type）。Widget::Impl 就是这样的类型。
+对于一个不完整类型，你能做的事情很少，但是定义一个指针指向它们是可以的。Pimpl 机制就是利用了这一点。
+
+Pimpl 机制的第一步就是声明一个数据成员指向一个不完整类型。第二步是动态分配和释放这个类型的对象，
+这个对象持有曾经在源类（没使用 Pimpl 机制时的类）中的数据成员。分配和释放代码写在实现文件中，比如，对于 Widget 来说，就在 widget.cpp 中:
+
+#+BEGIN_SRC C++
+  #include "widget.h" // in impl. file "widget.cpp"
+  #include "gadget.h"
+  #include <string>
+  #include <vector>
+  struct Widget::Impl { // definition of Widget::Impl
+	  std::string name; // with data members formerly
+	  std::vector<double> data; // in Widget
+	  Gadget g1, g2, g3;
+  };
+  Widget::Widget() // allocate data members for
+	  : pImpl(new Impl) // this Widget object
+  {}
+  Widget::~Widget() // destroy data members for
+  { delete pImpl; } // this object
+#+END_SRC
+这里我显示的#include 指令表明了，总的来说，对 std::string, std::vector, 和 Gadget 的头文件的依赖性还是存在的，
+但是，这些依赖性已经从 widget.h（这是对 Widget 客户可见以及被他使用的）转移到了 widget.cpp
+（这是只对 Widget 的实现者可见以及只被实现者所使用的）。我已经高亮了代码中动态分配和释放 Impl 对象的地方。
+为了当 Widget 销毁的时候释放这个对象，我们就需要使用 Widget 的析构函数。
+
+但是我显示给你的是 C++98 的代码，并且这散发着浓浓的旧时代的气息。它使用原始指针和原始的 new，delete，怎么说呢，就是太原始了。
+这一章的主题是智能指针优于原始指针，所以如果我们想在 Widget 构造函数中动态分配一个 Widget::Impl 对象，并且让它的销毁时间和 Widget 一样，
+std::unique_ptr(看 Item 18)这个工具完全符合我们的需要。把原始 pImpl 指针替换成 std::unique_ptr 在头文件中产生出这样的代码：
+
+#+BEGIN_SRC C++
+  class Widget { // in "widget.h"
+  public:
+	  Widget();
+	  …
+	  private:
+	  Item 22 | 149
+	  struct Impl;
+	  std::unique_ptr<Impl> pImpl; // use smart pointer
+  };
+#+END_SRC
+然后在实现文件中是这样的:
+
+#+BEGIN_SRC C++
+  #include "widget.h" // in "widget.cpp"
+  #include "gadget.h"
+  #include <string>
+  #include <vector>
+  struct Widget::Impl { // as before
+	  std::string name;
+	  std::vector<double> data;
+	  Gadget g1, g2, g3;
+  };
+  Widget::Widget() // per Item 21, create
+	  : pImpl(std::make_unique<Impl>()) // std::unique_ptr
+  {} // via std::make_unique
+#+END_SRC
+你应该已经注意到 Widget 的析构函数不存在了。这是因为我们没有任何代码要放到它里面。当 std::unique_ptr 销毁时，它自动销毁它指向的对象，
+所以我们自己没必要再 delete 任何东西。这是智能指针吸引人的一个地方：它们消除了手动释放资源的需求。
+
+这段代码能编译通过，但是，可悲的是，客户无法使用：
+
+#+BEGIN_SRC C++
+  #include "widget.h"
+  Widget w; // error!
+#+END_SRC
+你收到的错误信息取决于你使用的编译器，但是它通常涉及到把 sizeof 或 delete 用到一个不完整类型上。这些操作都不是你使用这种类型（不完整类型）能做的操作。
+
+使用 std::unique_ptr 造成的这种表面上的错误是很令人困扰的，因为（1)std::unique_ptr 声称自己是支持不完整类型的，并且
+（2）Pimpl 机制是 std::unique_ptr 最常见的用法。幸运的是，让代码工作起来是很容易的。所有需要做的事就是理解什么东西造成了这个问题。
+
+问题发生在 w 销毁的时候产生的代码（比如，离开了作用域）。在这个时候，它的析构函数被调用。在类定义中使用 std::unique_ptr，我们没有声明一个析构函数，
+因为我们不需要放任何代码进去。同通常的规则（看 Item 17）相符合，编译器为我们产生出析构函数。在析构函数中，
+编译器插入代码调用 Widget 的数据成员 pImpl 的析构函数。pImpl 是一个 std::unique_ptr，也就是一个使用了默认 deleter 的 std::unique_ptr。
+默认 deleter 是一个函数，这个函数在 std::unqieu_ptr 中把 delete 用在原始指针上，但是，实现中，
+常常让默认 deleter 调用 C++11 的 static_assert 来确保原始指针没有指向一个不完整类型。
+然后，当编译器为 Widget w 产生析构函数的代码时，它就碰到一个失败的 static_assert，这也就是导致错误消息的原因了。
+这个错误消息应该指向 w 销毁的地方，但是因为 Widget 的析构函数和所有的“编译器产生的”特殊成员函数一样，是 *隐式内联的* 。
+所以错误消息常常指向 w 创建的那一行，因为它的源代码显式创建的对象之后会导致隐式的销毁调用。
+
+调整起来很简单，在 widget.h 中声明 Widget 的的析构函数，但是不在这定义它：
+
+#+BEGIN_SRC C++
+  class Widget { // as before, in "widget.h"
+  public:
+	  Widget();
+	  ~Widget(); // declaration only
+	  …
+	  private: // as before
+	  struct Impl;
+	  std::unique_ptr<Impl> pImpl;
+  };
+#+END_SRC
+然后在 widget.cpp 中于 Widget::Impl 之后进行定义:
+
+#+BEGIN_SRC C++
+  #include "widget.h" // as before, in "widget.cpp"
+  #include "gadget.h"
+  #include <string>
+  #include <vector>
+  struct Widget::Impl { // as before, definition of
+	  Item 22 | 151
+	  std::string name; // Widget::Impl
+	  std::vector<double> data;
+	  Gadget g1, g2, g3;
+  };
+  Widget::Widget() // as before
+	  : pImpl(std::make_unique<Impl>())
+  {}
+  Widget::~Widget() // ~Widget definition
+  {}
+#+END_SRC
+这工作得很好，并且它要码的字最少，但是如果你想要强调“编译器产生的”析构函数可以做到正确的事情
+（也就是你声明它的唯一原因就是让它的定义在 Widget 的实现文件中产生），那么你就能在定义析构函数的时候使用“=default”：
+
+#+BEGIN_SRC C++
+  Widget::~Widget() = default; // same effect as above
+#+END_SRC
+使用 Pimpl 机制的类是可以支持 move 操作的，因为“编译器产生的”move 操作是我们需要的：执行一个 move 操作在 std::unique_ptr 上。
+就像 Item 17 解释的那样，在 Widget 中声明一个析构函数会阻止编译器产生 move 操作，所以如果你想支持 move 操作，
+你必须自己声明这些函数。如果“编译器产生的”版本是正确的行为，你可能会尝试像下面这样实现：
+
+#+BEGIN_SRC C++
+  class Widget { // still in
+  public: // "widget.h"
+	  Widget();
+	  ~Widget();
+	  Widget(Widget&& rhs) = default; // right idea,
+	  Widget& operator=(Widget&& rhs) = default; // wrong code!
+	  …
+	  private: // as before
+	  struct Impl;
+	  std::unique_ptr<Impl> pImpl;
+  };
+#+END_SRC
+这个方法将导致和不声明析构函数同样的问题，并且是出于同样的根本性的原因。“编译器产生的”operator move 在重新赋值前，
+需要销毁被 pImpl 指向的对象，但是在 Widget 的头文件中，pImpl 指向一个不完整类型。move 构造函数的情况和赋值函数是不同的。
+构造函数的问题是，万一一个异常在 move 构造函数中产生，编译器通常要产生出代码来销毁 pImpl，然后销毁 pImpl 需要 Impl 是完整的。
+
+因为问题和之前一样，所以修复方法也一样：把 move 操作的定义移动到实现文件中去：
+
+#+BEGIN_SRC C++
+  class Widget { // still in "widget.h"
+  public:
+	  Widget();
+	  ~Widget();
+	  Widget(Widget&& rhs); // declarations
+	  Widget& operator=(Widget&& rhs); // only
+	  …
+	  private: // as before
+	  struct Impl;
+	  std::unique_ptr<Impl> pImpl;
+  };
+  #include <string> // as before,
+  … // in "widget.cpp"
+  struct Widget::Impl { … }; // as before
+  Widget::Widget() // as before
+	  : pImpl(std::make_unique<Impl>())
+  {}
+  Widget::~Widget() = default; // as before
+  Widget::Widget(Widget&& rhs) = default; // defini-
+  Widget& Widget::operator=(Widget&& rhs) = default; // tions
+#+END_SRC
+Pimpl 机制是减少类的实现和类的客户之间的编译依赖性的方法，但是从概念上来说，使用这个机制不会改变类所代表的东西。
+源 Widget 类包含 std::string，std::vector 和 Gadet 数据成员，并且，假设 Gadget 和 std::string 以及 std::vector 一样，是能拷贝的，
+那么让 Widget 支持拷贝操作是有意义的。我们必须自己写这些函数，因为（1）编译器不会为“只能移动的类型”（比如 std::unique_ptr）产生出拷贝操作，
+（2）即使他们会这么做，产生的函数也只会拷贝 std::unique_ptr（也就是执行浅拷贝），但是我们想要拷贝指针指向的东西（也就是执行深拷贝）。
+
+按照我们已经熟悉的惯例，我们在头文件中声明函数，并且在实现文件中实现它：
+
+#+BEGIN_SRC C++
+  class Widget { // still in "widget.h"
+  public:
+	  … // other funcs, as before
+	  Widget(const Widget& rhs); // declarations
+	  Widget& operator=(const Widget& rhs); // only
+  private: // as before
+	  struct Impl;
+	  std::unique_ptr<Impl> pImpl;
+  };
+  #include "widget.h" // as before,
+  … // in "widget.cpp"
+  struct Widget::Impl { … }; // as before
+  Widget::~Widget() = default; // other funcs, as before
+  Widget::Widget(const Widget& rhs) // copy ctor
+	  : pImpl(std::make_unique<Impl>(*rhs.pImpl))
+  {}
+  Widget& Widget::operator=(const Widget& rhs) // copy operator=
+  {
+	  ,*pImpl = *rhs.pImpl;
+	  return *this;
+  }
+#+END_SRC
+两个函数的实现都很方便。每种情况，我们都只是简单地从源对象（rhs）中把 Impl 结构拷贝到目标对象（*this）。
+比起一个个地拷贝成员，我们利用了一个事实，也就是编译器会为 Impl 创造出拷贝操作，然后这些操作会自动地拷贝每一个成员。
+因此我们是通过调用 Widget::Impl 的“编译器产生的”拷贝操作来实现 Widget 的拷贝操作的，记住，我们还是要遵循 Item 21 的建议，
+比起直接使用 new，优先使用 std::make_unique。
+
+为了实现 Pimpl 机制，std::unique_ptr 是被使用的智能指针，因为对象（也就是 Widget）内部的 pImpl 指针对相应的实现对象（比如，Widget::Impl 对象）
+有独占所有权的语义。这很有趣，所以记住，如果我们使用 std::shared_ptr 来代替 std::unique_ptr 用在 pImpl 身上，
+我们将发现对于本 Item 的建议不再使用了。我们不需要声明 Widget 的析构函数，并且如果没有自定义的析构函数，
+编译器将很高兴地为我们产生出 move 操作，这些都是我们想要的。给出 widget.h 中的代码，
+
+#+BEGIN_SRC C++
+  class Widget { // in "widget.h"
+  public:
+	  Widget();
+	  … // no declarations for dtor
+	  // or move operations
+	  private:
+	  struct Impl;
+	  std::shared_ptr<Impl> pImpl; // std::shared_ptr
+  };
+#+END_SRC
+所有的东西都能编译并执行得和我们希望的一样：w1 将被默认构造，它的值将移动到 w2 中去，
+这个值之后将移动回 w1，并且最后 w1 和 w2 都将销毁（因此造成指向的 Widget::Impl 对象被销毁）。
+
+#+BEGIN_SRC C++
+  Widget w1;
+  auto w2(std::move(w1)); // move-construct w2
+  w1 = std::move(w2); // move-assign w1
+#+END_SRC
+
+std::unique_ptr 和 std::shared_ptr 对于 pImpl 指针行为的不同源于这两个智能指针对于自定义 deleter 的不同的支持方式。
+ _对于 std::unique_ptr 来说，deleter 的类型是智能指针类型的一部分_ ，并且这让编译器产生出更小的运行期数据结构和更快的运行期代码成为可能。
+这样的高效带来的结果就是，当“编译器产生的”特殊函数（也就是，析构函数和 move 操作)被使用的时候，指向的类型必须是完整的。
+对于 std::shared_ptr，deleter 的类型不是智能指针的一部分。这就需要更大的运行期数据结构和更慢的代码，
+但是当“编译器产生的”特殊函数被使用时，指向的类型不需要是完整的 
+
+对于 Pimpl 机制来说，std::unique_ptr 和 std::shared_ptr 之间没有明确的抉择，因为 Widget 和 Widget::Impl 之间的关系是独占所有权的关系，
+所以这使得 std::unique_ptr 成为更合适的工具。但是，值得我们注意的是另外一种情况，这种情况下共享所有权是存在的
+（因此 std::shared_ptr 是更合适的设计选择），我们就不需要做那么多的函数定义了（如果使用 std::unique_ptr 的话是要做的）。
+** 记住
++ Pimpl 机制通过降低类客户和类实现之间的编译依赖性来降低编译时间。
++ 对于 std::unique_ptr 的 pImpl 指针，在头文件中声明特殊成员函数，但是实现他们的时候要放在实现文件中实现。即使编译器提供的默认函数实现是满足设计需要，我们还是要这么做。
++ 上面的建议能用在 std::unique_ptr 上面，但是不能用在 std::shared_ptr 上面。
+* 参考
+原文：effective-modern-c++
+翻译：http://www.cnblogs.com/boydfd/

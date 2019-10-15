@@ -1,0 +1,102 @@
+#+TITLE: 学习 Spacemacs
+#+DATE: 2016-07-22
+#+LAYOUT: post
+#+CATEGORIES: notes
+#+TAGS: spacemacs
+
+* 安装 
+** 下载，最新下载地址 http://ftpmirror.gnu.org/emacs/emacs-25.2.tar.xz
+** 安装 
+   #+BEGIN_SRC sh
+     sudo yum -y install libXpm-devel libjpeg-turbo-devel openjpeg-devel openjpeg2-devel turbojpeg-devel giflib-devel libtiff-devel gnutls-devel libxml2-devel GConf2-devel dbus-devel wxGTK-devel gtk3-devel
+     ./configure 
+     make 
+     sudo make install
+   #+END_SRC
+
+* 常用快捷键
+** vi
+*** normal
+    r, R: r 修改当个字符，R 则会进入一种 overwrite 模式，可以替换从当前光标开始的任何字符
+
+** 编辑
+*** 删除整行：kill-whole-line (C-S-Backspace)
+* 环境
+** 博客 
+   1.SPC o p: 使用 org-save-and-export 导出博客 
+   2.SPC a S: 发布博客, 使用 prodigy 运行 hexo deploy,里面按 s 键启动
+** 牛人的一些配
+   https://github.com/zilongshanren/spacemacs-private
+** org-mode 学习记录
+在 Org-mode 中你可以直接开启新的缓冲区（Buffer）直接用相应的 Major Mode 来编辑代码块内的内容。在代码块中使用 =C-c ‘= 会直接打开对应模式的缓冲区（不仅限于 Lisp）。这样就使在 Org-mode 中编辑代码变的十分方便快捷。
+
+使用 <s 然后 Tab 可以直接插入代码块的代码片段（Snippet），更多类似的代码片段（Org-mode Easy Templates）
+快捷键为 c-c i s
+   #+BEGIN_SRC C++
+     #include <iostream>
+     int main()
+     {
+       std::cout<<"Hello world!" << std::endl; 
+     }
+   #+END_SRC
+  更多内容 http://doc.norang.ca/org-mode.html 
+*** 在 org-mode 中插入图片
++ 修改 hexo _config.yml 设置 post_asset_folder: true
++ 创建一个与文件同名的一级目录（TODO：修改 org-download-screenshot 去掉这步）
++ 使用 org-download-screenshot 截图
+#+DOWNLOADED: /tmp/screenshot.png @ 2018-01-02 10:24:31
+[[file:2016-07-22-test/screenshot_2017-12-31_17-12-09.png]]
+{{{more}}}
+** 配置 C＋＋环境
+**** 格式化：C－x h 全屏选择, C-M \进行格式化
+** 配置 python 环境
+*** 设置 python 编码格式，以解决 yapf 报编码问题
+**** 在/usr/lib/python2.7/site-packages 目录下面创建 sitecustomize.py 文件内容为
+
+     #+BEGIN_SRC python
+       #!/usr/bin/env python
+       # -*- coding: UTF-8 -*-
+       import sys
+
+       reload(sys)
+       sys.setdefaultencoding('utf8')
+     #+END_SRC
+
+*** python 的格式化 yapf, 需要在~/.config/yapf/style 中配置[[https://github.com/google/yapf][style]]
+** 配置 javascript 环境
+*** 使用 company-tern 补全
++ sudo npm install -g tern
++ 配置.tern-project
+
+  #+BEGIN_SRC js
+	{
+		"ecmaVersion": 6,
+		"libs": [
+		],
+		"loadEagerly": [
+			"./src/**/*.js"
+		],
+		"plugins": {
+			"node": {},
+			"react": {}
+		}
+	}
+
+  #+END_SRC
+*** ESLint 语法检查
++ npm install -g eslint
++ 配置.eslintrc.js
++ 检查 eslint --print-config .
+* 一些技巧
+** 去掉^M
+   M-x replace-string RET C-q C-m RET RET
+   这样就 ok 了,  注意上面的 C-q C-m 就是换行符的生成方法,而不是简单的输入^M.
+**  .cc 文件到.h 的项目文件跳转
+   customize-variable 回车，然后输入 projectile-other-file-alist 设置跳转关系
+** 粘贴覆盖选择区 
+   emacs 默认粘贴选择区时不会删除选择区的内容，要改下配置 (delete-selection-mode t)
+   
+** 直接在查找结果中编辑
+   1. 用 M-s o 进行 occur 查找
+   2. 用 M-x occur-edit-mode 然后按 e 进行编辑
+   3. C－c C-c 进行保存

@@ -1,0 +1,33 @@
+#+TITLE: C++ Ep20: Static Variable
+#+DATE: 2018-02-13
+#+LAYOUT: post
+#+TAGS: static
+#+CATEGORIES: C++ Weekly
+
+* C++ static 变量
+** 初始化顺序
++  全局变量、文件域的 static 变量和类的 static 成员变量在 main 函数执行之前初始化
++  局部静态变量在第一次被使用时初始化
+#+HTML: <!-- more -->
+** 线程安全
+从 C++ 11 起局部静态变量的初始化是线程安全的。
+** 效率
+由于要保证局部静态变量的线程安全，所以在每次访问时都需要 guard 判断变量是补始化，这样存在一个效率的问题。
+
+#+BEGIN_SRC C++
+  struct C{
+	static const std::string &magic_static()
+	{
+	  static  std::string s = "hardy";
+	  return s;
+	}
+	const std::string &s = magic_static();
+	const std::string &magic_static_ref()
+	{
+	  return s;
+	}
+
+  };
+
+#+END_SRC
+在上面的例子中，调用 magic_static 的效率要比 magic_static_ref 低。

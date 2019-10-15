@@ -1,0 +1,46 @@
+#+TITLE: Machine Learning(2）Logistic Regression
+#+DATE: 2017-04-27
+#+CATEGORIES: ai
+#+TAGS: logistic regression
+
+* Decision Boundary
+决策边界(Decison Boundary)就是用来划清界限的边界，即属于哪一类。
+“决策边界是预测函数$h_\theta(x)$ 的属性，而不是训练集属性”，这是因为能作出“划清”类间界限的只有$h_\theta(x)$ ，而训练集只是用来训练和调节参数的。
+#+HTML: <!-- more -->
+
+* Hypothesis
+在逻辑回归中，定义预测函数为:
+$$h_\theta (x) = g(z)$$
+其中，$z=\theta^Tx$ 是分类边界，且 $g(z)=\frac{1}{1+e^{-z}}$
+* Cost Function
+\begin{gather*}
+& J(\theta) = \dfrac{1}{m} \sum_{i=1}^m \mathrm{Cost}(h_\theta(x^{(i)}),y^{(i)}) 
+\newline & \mathrm{Cost}(h_\theta(x),y) = -\log(h_\theta(x)) \; & \text{if y = 1} 
+\newline & \mathrm{Cost}(h_\theta(x),y) = -\log(1-h_\theta(x)) \; & \text{if y = 0}
+\end{gather*}
+
+\begin{gather*}
+& \mathrm{Cost}(h_\theta(x),y) = 0 \text{ if } h_\theta(x) = y 
+\newline & \mathrm{Cost}(h_\theta(x),y) \rightarrow \infty \text{ if } y = 0 \; 
+\mathrm{and} \; h_\theta(x) \rightarrow 1 
+\newline & \mathrm{Cost}(h_\theta(x),y) 
+\rightarrow \infty \text{ if } y = 1 \; \mathrm{and} \; h_\theta(x) \rightarrow 0 
+\newline
+\end{gather*}
+* Simplified Cost Function
+$$\mathrm{Cost}(h_\theta(x),y) = - y \; \log(h_\theta(x)) - (1 - y) \log(1 - h_\theta(x))$$
+$$J(\theta) = - \frac{1}{m} \displaystyle \sum_{i=1}^m [y^{(i)}\log (h_\theta (x^{(i)})) + (1 - y^{(i)})\log (1 - h_\theta(x^{(i)}))]$$
+\begin{gather*} & h = g(X\theta)\newline & J(\theta) = \frac{1}{m} \cdot \left(-y^{T}\log(h)-(1-y)^{T}\log(1-h)\right) \end{gather*}
+* Gradient Descent
+\begin{gather*}& Repeat \; \lbrace \newline & \; \theta_j := \theta_j - \alpha \dfrac{\partial}{\partial \theta_j}J(\theta) \newline & \rbrace\end{gather*}
+\begin{gather*} & Repeat \; \lbrace \newline & \; \theta_j := \theta_j - \frac{\alpha}{m} \sum_{i=1}^m (h_\theta(x^{(i)}) - y^{(i)}) x_j^{(i)} \newline & \rbrace \end{gather*}
+A vectorized implementation is:
+$$\theta := \theta - \frac{\alpha}{m} X^{T} (g(X \theta ) - \vec{y})$$
+* Multi-class classification
+多分类问题通常采用 *One-vs-All* ，亦称 One-vs-the Rest 方法来实现多分类，其将多分类问题转化为了多次二分类问题
+* overfitting
+过拟合：如果太多的特征时，预测函数能拟合训练集，即代价函数的值非常小，但无法正确预测新的新的样本。
+解决方案：
+1. 减少特征
+2. 正规化
+

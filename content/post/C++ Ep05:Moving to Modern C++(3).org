@@ -1,0 +1,544 @@
+#+TITLE: C++ Ep05:Moving to Modern C++(3)
+#+DATE: 2017-12-27
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++
+#+CATEGORIES: Modern C++
+
+* item 15: 只要有可能，就使用 constexpr
+    从概念上来说，constexpr 表明的一个值不只是不变的，它还能在编译期被知道。但是这个概念只是故事的一部分，因为当 constexpr 应用在函数上时，
+事情变得比看上去还要微妙。为了避免毁掉后面的惊喜，现在，我只能说你不能假设 constexpr 函数的返回值是 const 的，同时你也不能假设这些值能在编译期被知道。
+也许最有趣的是，这些东西都是特性（是有用的）。对于 constexpr 函数来说，不需要产生 const 或能在编译期知道的返回结果是一件好事。
+
+但是，让我们从 constexpr 对象开始。这些对象确实是常量，也确实能在编译期被知道。
+（技术上来讲，它们的值是在翻译阶段被决定的，翻译阶段包含了编译期和链接期。除非你要写一个 C++的编译器或连接器，不然这都影响不到你，
+所以你能在编程的时候，开心地假设为 constexpr 对象的值是在编译期被决定的）
+
+#+BEGIN_SRC C++
+  int sz; // non-constexpr variable
+  …
+  constexpr auto arraySize1 = sz; // error! sz's value not
+  // known at compilation
+  std::array<int, sz> data1; // error! same problem
+  constexpr auto arraySize2 = 10; // fine, 10 is a
+  // compile-time constant
+  std::array<int, arraySize2> data2; // fine, arraySize2
+  // is constexpr
+#+END_SRC
+记住，const 不能提供和 constexpr 一样的保证，因为 const 对象不需要用“在编译期就知道的”值初始化：
+
+#+BEGIN_SRC C++
+  int sz; // as before
+  …
+  const auto arraySize = sz; // fine, arraySize is
+  // const copy of sz
+  std::array<int, arraySize> data; // error! arraySize's value
+  // not known at compilation
+#+END_SRC
+#+HTML: <!-- more -->
+
+当涉及 constexpr 函数时，constexpr 对象的使用范围变得更加有趣。
+当使用编译期常量来调用这样的函数时，它们产生编译期常量。当用来调用函数的值不能在运行期前得知时，它们产生运行期的值。
+这听起来好像你知道它们会做什么，但是这么想是错误的。正确的观点是这样的：
+＋ constexpr 函数能被用在要求编译期常量的上下文中，如果所有传入 constexpr 函数的参数都能在编译期知道，那么结果将在编译期计算出来。
+如果有任何一个参数的值不能在编译期知道，你的代码就被拒绝（不能在编译期执行）了。
+＋ 当使用一个或多个不能在编译期知道的值来调用一个 constexpr 函数时，它表现得就像一个正常的函数，在运行期计算它的值。
+这意味着你不需要两个函数来表示相同的操作，一个为编译期常量服务，一个为所有的值服务。constexpr 函数把这些事都做了。
+
+假设你需要一个数据结构来存放一个运算方式不会改变的实验结果。举个例子，在实验过程中，灯的亮度等级（有高，低，关三种状态），风扇的速度，以及温度也是这样，等等。
+如果这里有 n 种环境条件和实验有关，每种条件有三种状态，那么结果的组合数量就是 3^n。
+因此对于实验结果的所有的组合进行保存，就需要一个起码有 3^n 的空间的数据结构。假设每个结果都是一个 int，那么 n 就是在编译期已知的（或者说可以计算出来），
+std::array 是一个合理的选择。但是我们需要一个方法来在编译期计算 3^n。C++标准库提供了 std::pow，这个函数是我们需要的数学函数，
+但是对于我们的目的来说，它有两点问题。第一，std::pow 在浮点类型下工作，但是我们需要一个整形的结果。
+第二，std::pow 不是 constexpr（也就是，用编译期的值调用它时，它不能返回一个编译期的结果），所以我们不能用它来明确 std::array 的大小。
+
+幸运的是，我们能自己写一个我们所需要的 pow，我马上就会告诉你怎么实现，但是现在先让我们看一下它是怎么声明以及怎么使用的：
+
+#+BEGIN_SRC C++
+  constexpr // pow's a constexpr func
+  int pow(int base, int exp) noexcept // that never throws
+  {
+	  … // impl is below
+		  }
+  constexpr auto numConds = 5; // # of conditions
+  std::array<int, pow(3, numConds)> results; // results has
+  // 3^numConds
+  // elements
+#+END_SRC
+回忆一下，pow 前面的 constexpr 不是说 pow 返回一个 const 值，它意味着如果 base 和 exp 是编译期常量，pow 的返回结果能被视为编译期常量。
+如果 base 和/或 exp 不是编译期常量，pow 的结果将在运行期计算。这意味着 pow 不只能在编译阶段计算 std::array 的大小，它也可以在运行期的时候这么调用:
+
+#+BEGIN_SRC C++
+  auto base = readFromDB("base"); // get these values
+  auto exp = readFromDB("exponent"); // at runtime
+  auto baseToExp = pow(base, exp); // call pow function
+  // at runtime
+#+END_SRC
+
+在 c++11 中，constexpr 函数只能包含一条简单的语句：一个 *return* 语句。
+实际上，限制没听起来这么大，因为两个技巧可以用来扩张 constexpr 函数的表达式，并且这将超过你的想象。
+第一，条件表达式 “?:”能用来替换 if-else 语句，然后第二，递归能用来替换循环。因此 pow 被实现成这样
+
+#+BEGIN_SRC C++
+  constexpr int pow(int base, int exp) noexcept
+  {
+	  return (exp == 0 ? 1 : base * pow(base, exp - 1));
+  }
+#+END_SRC
+这确实可以工作，但是很难想象，除了写函数的人，还有谁会觉得这个函数写得很优雅。
+在 C++14 中，constexpr 函数的限制大幅度变小了，所以这让下面的实现成为了可能：
+
+#+BEGIN_SRC C++
+  constexpr int pow(int base, int exp) noexcept // C++14
+  {
+	  auto result = 1;
+	  for (int i = 0; i < exp; ++i) result *= base;
+	  return result;
+  }
+#+END_SRC
+constexpr 函数由于限制，只能接受和返回 literal 类型（本质上来说就是，这个类型的值能在编译期决定）。
+在 C++11 中，除了 void 的所有 built-in 类型都是 literal 类型，user-defined 类型也可能是 literal 类型。
+因为构造函数和其他函数也可能是 constexpr：
+
+#+BEGIN_SRC C++
+  class Point {
+  public:
+	  constexpr Point(double xVal = 0, double yVal = 0) noexcept
+	  : x(xVal), y(yVal)
+		  {}
+	  constexpr double xValue() const noexcept { return x; }
+	  constexpr double yValue() const noexcept { return y; }
+	  void setX(double newX) noexcept { x = newX; }
+	  void setY(double newY) noexcept { y = newY; }
+  private:
+	  double x, y;
+  };
+#+END_SRC
+这里，Point 的构造函数被声明为 constexpr，因为如果传入的参数能在编译期知道，则被构造的 Point 的成员变量的值也能在编译期知道。
+因此，Point 也能被初始化为 constexpr：
+
+#+BEGIN_SRC C++
+  constexpr Point p1(9.4, 27.7); // fine, "runs" constexpr
+  // ctor during compilation
+  constexpr Point p2(28.8, 5.3); // also fine
+#+END_SRC
+同样地，getter（xValue 和 yValue）也能是 constexpr，因为如果用一个在编译期就知道的 Point 对象调用它们（比如，一个 constexpr Point 对象），
+则成员变量 x 和 y 的值都能在编译期知道。这使得一个 constexpr 函数能调用 Point 的 getter，然后用这个函数的返回值来初始化一个 constexpr 对象。
+
+#+BEGIN_SRC C++
+  constexpr
+  Point midpoint(const Point& p1, const Point& p2) noexcept
+  {
+	  return { (p1.xValue() + p2.xValue()) / 2, // call constexpr
+			  (p1.yValue() + p2.yValue()) / 2 }; // member funcs
+  }
+  constexpr auto mid = midpoint(p1, p2); // init constexpr
+  // object w/result of
+  // constexpr function
+#+END_SRC
+这是很激动人心的，它意味着，虽然 mid 对象的初始化需要调用构造函数，getter 函数和一个 non-member 函数，但是它还是能在 read-only 内存中创建！
+这意味着，你能使用一个表达式（比如 mid.xValue() * 10）来明确模板的参数，或者明确 enum 成员的值。
+它意味着以前运行期能做的工作和编译期能做的工作之间的界限变得模糊了，一些以前只能在运行期执行的运算现在可以移到编译期来执行了。
+移动的代码越多，软件跑得越快。（当然编译时间也会增加。）
+
+在 C++11 中，有两个限制阻止 Point 的成员函数 setX 和 setY 被声明为 constexpr。第一，它们改动了它们操作的对象，但是在 C++11 中，
+constexpr 成员函数被隐式声明为 const。第二，它们的返回值类型是 void，void 类型在 C++11 中不是 literal 类型。
+在 C++14 中，两个限制都被移除了，所以 C++14 的 Point，能把它的 setter 也声明为 constexpr：
+
+#+BEGIN_SRC C++
+  class Point {
+  public:
+	  …
+	  constexpr void setX(double newX) noexcept // C++14
+		  { x = newX; }
+	  constexpr void setY(double newY) noexcept // C++14
+		  { y = newY; }
+	  …
+  };
+#+END_SRC
+这使得我们能写出这样的函数：
+
+#+BEGIN_SRC C++
+  // return reflection of p with respect to the origin (C++14)
+  constexpr Point reflection(const Point& p) noexcept
+  {
+	  Point result; // create non-const Point
+	  result.setX(-p.xValue()); // set its x and y values
+	  result.setY(-p.yValue());
+	  return result; // return copy of it
+  }
+#+END_SRC
+客户代码看起来像这样：
+
+#+BEGIN_SRC C++
+  constexpr Point p1(9.4, 27.7); // as above
+  constexpr Point p2(28.8, 5.3);
+  constexpr auto mid = midpoint(p1, p2);
+  constexpr auto reflectedMid = // reflectedMid's value is
+	  reflection(mid); // (-19.1 -16.5) and known
+  // during compilation
+#+END_SRC
+本 Item 的建议是，只要有可能就使用 constexpr，并且现在我希望你能知道这是为什么：比起 non-constexpr 对象和 non-constexpr 函数，
+constexpr 对象和 constexpr 函数都能被用在更广泛的上下文中（一些只能使用常量表达式的地方）。
+通过“只要有可能就使用 constexpr”，你能让你的对象和函数的使用范围最大化。
+
+记住，constexpr 是对象接口或函数接口的一部分，constexpr 宣称“我能被用在任何需要常量表达式的地方”。
+如果你声明一个对象或函数为 constexpr，客户就有可能使用在这些上下文中（要求常量表达式的地方）。
+如果你之后觉得对于 constexpr 的使用是错误的，然后移除了 constexpr，这会造成很大范围的客户代码无法编译。
+（由于调试的原因，增加一个 I/O 操作到我们的 constexpr 函数中也会导致同样的问题，因为 I/O 语句一般不允许在 constexpr 中使用）
+“只要有可能就使用 constexpr”中的“只要有可能”是说：需要你保证你愿意长时间保持这些对象和函数是 constexpr。
+
+** 记住
++ constexpr 对象是 const，对它进行初始化的值需要在编译期知道。
++ 如果使用在编译期就知道的参数来调用 constexpr 函数，它就能产生编译期的结果
++ 比起 non-constexpr 对象和函数，constexpr 对象很函数能被用在更广泛的上下文中
++ constexpr 是对象接口或函数接口的一部分
+* item 16: 让 const 成员函数做到线程安全
+如果我们在数学领域里工作，我们可能会发现用一个类来表示多项式会很方便。在这个类中，如果有一个函数能计算多选式的根,将变得很方便。
+这个函数不会改变多项式，所以很自然就想到把它声明为 const：
+
+#+BEGIN_SRC C++
+  class Polynomial {
+  public:
+	  using RootsType = // data structure holding values
+		  std::vector<double>; // where polynomial evals to zero
+	  … // (see Item 9 for info on "using")
+	  RootsType roots() const;
+	  …
+  };
+#+END_SRC
+计算多项式的根代价可能很高，所以如果不必计算的话，我们就不想计算。如果我们必须要计算，那么我们肯定不想多次计算。因此，当我们必须要计算的时候，
+我们将计算后的多项式的根缓存起来，并且让 roots 函数返回缓存的根。这里给出最基本的方法：
+
+#+BEGIN_SRC C++
+  class Polynomial {
+  public:
+	  using RootsType = std::vector<double>;
+	  RootsType roots() const
+		  {
+			  if (!rootsAreValid) { // if cache not valid
+				  … // compute roots,
+  // store them in rootVals
+					  rootsAreValid = true;
+			  }
+			  return rootVals;
+		  }
+  private:
+	  mutable bool rootsAreValid{ false }; // see Item 7 for info
+	  mutable RootsType rootVals{}; // on initializers
+  };
+#+END_SRC
+概念上来说，roots 的操作不会改变 Polynomial 对象，但是，对于它的缓存行为来说，它可能需要修改 rootVals 和 rootsAreValid。
+这就是 *mutable* 很经典的使用情景，这也就是为什么这些成员变量的声明带有 mutable。
+
+现在想象一下有两个线程同时调用同一个 Polynomial 对象的 roots：
+
+#+BEGIN_SRC C++
+  Polynomial p;
+  …
+  /*----- Thread 1 ----- */ /*------- Thread 2 ------- */
+  auto rootsOfP = p.roots(); auto valsGivingZero = p.roots();
+#+END_SRC
+客户代码是完全合理的，roots 是 const 成员函数，这就意味着，它表示一个读操作。在多线程中非同步地执行一个读操作是安全的。
+至少客户是这么假设的。但是在这种情况下，却不是这样，因为在 roots 中，这两个线程中的一个或两个都可能尝试去修改成员变量 rootsAreValid 和 rootVals。
+这意味着这段代码在没有同步的情况下，两个不同的线程读写同一段内存，这其实就是 data race 的定义。所以这段代码会有未定义的行为。
+
+现在的问题是 roots 被声明为 const，但是它却不是线程安全的(修改了 multable 成员的值)。解决这个问题最简单的方式就是最常用的办法：使用一个 mutex：
+
+#+BEGIN_SRC C++
+  class Polynomial {
+  public:
+	  using RootsType = std::vector<double>;
+	  RootsType roots() const
+		  {
+			  std::lock_guard<std::mutex> g(m); // lock mutex
+			  if (!rootsAreValid) { // if cache not valid
+				  … // compute/store roots
+					  rootsAreValid = true;
+			  }
+			  return rootVals;
+		  } // unlock mutex
+  private:
+	  mutable std::mutex m;
+	  mutable bool rootsAreValid{ false };
+	  mutable RootsType rootVals{};
+  };
+#+END_SRC
+std::mutex m 被声明为 mutable，因为对它加锁和解锁调用的都不是 const 成员函数，在 roots（一个 const 成员函数）中，如果不这么声明，
+m 将被视为 const 对象。
+
+值得注意的是，因为 std::mutex 是一个 *move-only* 类型（也就是，这个类型的对象只能 move 不能 copy），所以把 m 添加到 Polynomial 中，
+会让 Polynomial 失去 copy 的能力，但是它还是能被 move 的。
+
+在一些情况下，一个 mutex 是负担过重的。举个例子，如果你想做的事情只是计算一个成员函数被调用了多少次，一个 std::atomic 计数器
+（也就是，其它的线程保证看着它的（counter 的）操作不中断地做完，看 Item 40）常常是达到这个目的的更廉价的方式。
+（事实上是不是更廉价，依赖于你跑代码的硬件和标准库中 mutex 的实现）这里给出怎么使用 std::atomic 来计算调用次数的例子：
+
+#+BEGIN_SRC C++
+  class Point { // 2D point
+  public:
+	  …
+	  double distanceFromOrigin() const noexcept // see Item 14
+		  { // for noexcept
+			  ++callCount; // atomic increment
+			  return std::sqrt((x * x) + (y * y));
+		  }
+  private:
+	  mutable std::atomic<unsigned> callCount{ 0 };
+	  double x, y;
+  };
+#+END_SRC
+和 std::mutex 相似，std::atomic 也是 move-only 类型，所以由于 callCount 的存在，Point 也是 move-only 的。
+
+因为比起 mutex 的加锁和解锁，对 std::atomic 变量的操作常常更廉价，所以你可能会过度倾向于 std::atomic。举个例子，在一个类中，
+缓存一个“计算昂贵”的 int，你可能会尝试使用一对 std::atomic 变量来代替一个 mutex：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  …
+	  int magicValue() const
+		  {
+			  if (cacheValid) return cachedValue;
+			  else {
+				  auto val1 = expensiveComputation1();
+				  auto val2 = expensiveComputation2();
+				  cachedValue = val1 + val2; // uh oh, part 1
+				  cacheValid = true; // uh oh, part 2
+				  return cachedValue;
+			  }
+		  }
+  private:
+	  mutable std::atomic<bool> cacheValid{ false };
+	  mutable std::atomic<int> cachedValue;
+  };
+#+END_SRC
+这能工作，但是有时候它会工作得很辛苦，考虑一下：
++ 一个线程调用 Widget::magicValue,看到 cacheValid 是 false 的，执行了两个昂贵的计算，并且把它们的和赋给 cachedValue
++ 在这个时间点，第二个线程调用 Widget::magicValue，也看到 cacheValid 是 false 的，因此同样进行了昂贵的计算（这个计算第一个线程已经完成了）。
+（这个“第二个线程”事实上可能是一系列线程，也就会不断地进行这昂贵的计算）
+
+这样的行为和我们使用缓存的目的是相违背的。换一下 cachedValue 和 CacheValid 赋值的顺序可以消除这个问题（不断进行重复计算），但是错的更加离谱了：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  …
+	  int magicValue() const
+		  {
+			  if (cacheValid) return cachedValue;
+			  else {
+				  auto val1 = expensiveComputation1();
+				  auto val2 = expensiveComputation2();
+				  cacheValid = true; // uh oh, part 1
+				  return cachedValue = val1 + val2; // uh oh, part 2
+			  }
+		  }
+	  …
+  };
+#+END_SRC
+想象一下 cacheValid 是 false 的情况：
++ 一个线程调用 Widget::magicValue，并且刚执行完：把 cacheValid 设置为 true
++ 同时，第二个线程调用 Widget::magicValue，然后检查 cacheValid，发现它是 true，
+然后，即使第一个线程还没有把计算结果缓存下来，它还是直接返回 cachedValue。因此，返回的值是不正确的
+
+让我们吸取教训。对于单一的变量或者内存单元，它们需要同步时，使用 std::atomic 就足够了，
+但是一旦你需要处理两个或更多的变量或内存单元，并把它们视为一个整体，那么你就应该使用 mutex。对于 Widget::magicValue，看起来应该是这样的：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  …
+	  int magicValue() const
+		  {
+			  std::lock_guard<std::mutex> guard(m); // lock m
+			  if (cacheValid) return cachedValue;
+			  else {
+				  auto val1 = expensiveComputation1();
+				  auto val2 = expensiveComputation2();
+				  cachedValue = val1 + val2;
+				  cacheValid = true;
+				  return cachedValue;
+			  }
+		  } // unlock m
+	  …
+	  private:
+	  mutable std::mutex m;
+	  mutable int cachedValue; // no longer atomic
+	  mutable bool cacheValid{ false }; // no longer atomic
+  };
+#+END_SRC
+现在，这个 Item 是基于“多线程可能同时执行一个对象的 const 成员函数”的假设。如果你要写一个 const 成员函数，
+并且你能保证这里没有多于一个的线程会执行这个对象的 cosnt 成员函数，那么函数的线程安全就不重要了。
+举个例子，如果一个类的成员函数只是设计给单线程使用的，那么这个成员函数是不是线程安全就不重要了。
+在这种情况下，你能避免 mutex 和 std::atomic 造成的负担。以及免受“包含它们的容器将变成 move-only”的影响。
+然而，这样的自由线程（threading-free）变得越来越不常见了，它们还将变得更加稀有。以后，const 成员函数的多线程执行一定会成为主题，
+这就是为什么你需要确保你的 const 成员函数是线程安全的。
+** 记住
++ 让 const 成员函数做到线程安全(包含 mutable 成员时需要考虑线程安全)，除非你确保它们永远不会用在多线程的环境下
++ 比起 mutex，使用 std::atomic 变量能提供更好的性能，但是它只适合处理单一的变量或内存单元
+* item 17: 理解特殊成员函数的生成规则
+C++的官方说法中，特殊成员函数(*special member functions*))是 C++愿意去主动生成的。。C++98 有 4 个这样的函数
+：默认构造函数，析构函数，拷贝构造函数，拷贝 operator=。当然，这里有些细则。这些函数只在需要的时候产生，也就是，
+在类中如果一些代码没有清楚地声明它们就使用了它们。一个默认构造函数只有在类中没有声明任何构造函数的情况下才会被生成出来
+（当你的目的是要求这个类的构造函数必须提供参数时，这防止编译器为你的类生成一个默认构造函数。）。
+特殊成员函数被隐式生成为 public 和 inline，并且它们是 nonvirtual，除非是在派生类中的析构函数，并且这个派生类继承自带 virtual 析构函数的基类。
+在这种情况下，派生类中，编译器生成的析构函数也是 virtual。
+
+但是你已经知道这些事情了。意识到新规则的产生是很重要的，因为没有什么事和“知道什么时候编译器会悄悄地把成员函数插入到你的类中”一样能作为高效 C++编程的核心了.
+在 C++11 中，特殊成员函数“俱乐部”有两个新成员：move 构造函数和 move operator=。这里给出它们的函数签名：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  …
+	  Widget(Widget&& rhs); // move constructor
+	  Widget& operator=(Widget&& rhs); // move assignment operator
+	  …
+  };
+#+END_SRC
+控制它们的生成和行为的规则和它们的“copying 兄弟”很像。move 操作只有在被需要的时候生成，并且如果它们被生成出来，
+它们对类中的 non-static 成员变量执行“memberwise move”（“以成员为单位逐个 move”）。
+这意味着 move 构造函数，用参数 rhs 中的相应成员“移动构造”（move-construct）每个 non-static 成员变量，
+并且 move operator=“移动赋值”（move-assign）每个 non-static 成员变量。move 构造函数同样“移动构造”基类的部分（如果存在的话），
+并且 move operator=也“移动赋值”它的基类部分。
+
+现在，当我提及 move 操作（移动构造或移动赋值）一个成员变量或基类时，不能保证 move 会真正发生。
+“memberwise move”事实上更像一个请求，因为那些不是 move-enabled（能移动的）类型（也就是，不提供 move 操作的类型，比如，大多数 C++98 遗留下来的类）
+将通过 copy 操作来“move”。每个 memberwise “move”的关键都是 std::move 的应用，首先 move 来自一个对象（std::move 的参数），
+然后通过函数重载解析来决定执行 move 或 copy，最后产生一个结果（move 来的或 copy 来的）。
+这个 Item 中，只需要简单地记住“memberwise move”是这么运作的：当成员函数和基类支持 move 操作时，就使用 move，如果不知道 move 操作，就使用 copy。
+
+copy 操作一样，如果你自己声明了 move 操作，编译器就不会帮你生成了。但是，它们被生成的具体条件和 copy 操作有一点不一样。
+
+两个 copy 操作是独立的：声明一个不会阻止编译器生成另外一个。所以如果你声明了一个拷贝构造函数，但是没有声明拷贝 operator=，
+然后你写的代码中要用到拷贝赋值，编译器将帮你生成一个拷贝 operator=。
+
+两个 move 操作不是独立的：如果你声明了任何一个，那就阻止了编译器生成另外一个。也就是说，基本原理就是，如果你为你的类声明了一个 move 构造函数，
+那么你就表明你的 move 构造函数和编译器生成的不同，它不是通过默认的 memberwise move 来实现的。并且如果 memberwise move 构造函数不对的话，
+那么 memberwise move 赋值函数也应该不对。所以声明一个 move 构造函数会阻止一个 move operator=被自动生成，
+声明一个 move operator=函数会阻止一个 move 构造函数被自动生成。
+
+另外，如果任何类显式地声明了一个 copy 操作，move 操作就不会被自动生成。理由是，声明一个 copy 操作（构造函数或 assignment 函数）表明了用正常的方法
+（memberwise copy）来拷贝对象对于这个类来说是不合适的，然后编译器认为，如果对于 copy 操作来说 memberwise copy 不合适，
+那么对于 move 操作来说 memberwise move 很有可能也是不合适的。
+
+反过来也是这样。声明一个 move 操作会使得编译器让 copy 操作不可用（通过 delete（看 Item 11）可以使得 copy 操作不可用。）
+总之，如果 memberwise move 不是 move 一个对象最合适的方法，就没有理由期望 memberwise copy 是 copy 这个对象的合适方法。
+
+也许你已经听过被称为“三法则”（“the Rule of Three”）的准则了。三法则说明了如果你声明了任何一个拷贝构造函数，拷贝 operator=或析构函数，
+那么你应该声明所有的这三个函数。它产生于一个观察（自定义 copy 操作的需求几乎都来自一种类，这种类需要对一些资源进行管理），
+并且大部分暗示着：（1）在一个 copy 操作中做的任何资源管理，在另一个 copy 操作中很可能也需要做同样的管理。
+（2）类的析构函数也需要参与资源管理（通常是释放资源）。需要被管理的经典资源就是内存了，并且这也是为什么所有管理内存的标准库类
+（比如，执行动态内存管理的 STL 容器）都被称作“the big three”：两个 copy 操作和一个析构函数。
+
+三法则的一个结论是：类中出现一个 user-declared 析构函数表示简单的 memberwise copy 可能不太适合 copy 操作。这反过来就建议：如果一个类声明了一个析构函数，
+copy 操作可能不应该被自动生成，因为它们可能将作出一些不正确的事。但是，三法则背后的原因还是有效的，并且，结合之前的观察（copy 操作的声明阻止隐式 move 操作的生成） ，
+这促使 C++11 在一个类中有一个 user-declared 的析构函数时，不去生成 move 操作。
+
+所以只在下面这三个事情为真的时候才为类生成 move 操作（当需要的时候）：
++ 没有 copy 操作在类中被声明。
++ 没有 move 操作在类中被声明。
++ 没有析构函数在类中被声明。
+
+在某些情况下，相似的规则可能延伸到 copy 操作中去，因为当一个类中声明了 copy 操作或者一个构造函数时，C++11 不赞成自动生成 copy 操作。
+这意味着如果你的类中，已经声明了析构函数或者其中一个 copy 操作，但是你依赖于编译器帮你生成另外的 copy 操作，那么你应该“升级”一下这些类来消除依赖。
+如果编译器生成的函数提供的行为是正确的（也就是，如果 memberwise copy 就是你想要的），你的工作就很简单了，因为 C++11 的“=default”让你能明确地声明：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  …
+	  ~Widget(); // user-declared dtor
+	  … // default copy ctor
+	  Widget(const Widget&) = default; // behavior is OK
+	  Widget& // default copy assign
+	  operator=(const Widget&) = default; // behavior is OK
+	  …
+  };
+#+END_SRC
+这种方法在多态基类（也就是，定义“派生类对象需要被调用的”接口的类）中常常是有用的。多态基类通常拥有 virtual 析构函数，因为如果它们没有，一些操作
+（比如，通过指向派生类对象的基类指针进行 delete 操作或基类引用进行 typeid 操作）会产生未定义或错误的结果。
+除非这个类继承了一个已经是 virtual 的析构函数，而唯一让析构函数成为 virtual 的办法就是显示声明它
+。常常，默认实现是对的，“=default”就是很好的方法来表达它。但是，一个 user-declared 析构函数抑制了 move 操作的产生，
+所以如果 move 的能力是被支持的，“=default”就找到第二个应用的地方了。声明一个 move 操作会让 copy 操作失效，所以如果 copy 的能力也是需要的，
+新一轮的“=deafult”能做这样的工作:
+
+#+BEGIN_SRC C++
+  class Base {
+  public:
+	  virtual ~Base() = default; // make dtor virtual
+	  Base(Base&&) = default; // support moving
+	  Base& operator=(Base&&) = default;
+	  Base(const Base&) = default; // support copying
+	  Base& operator=(const Base&) = default;
+	  …
+  };
+#+END_SRC
+事实上，即使你有一个类，编译器愿意为这个类生成 copy 和 move 操作，并且生成的函数的行为是你想要的，
+你可能还是要接受上面的策略（自己声明它们并且使用“= default”作为定义）。这样需要做更多的工作，但是它使得你的意图看起来更清晰，并且它能帮你
+避开一些很微妙的错误。举个例子，假设你有一个类代表一个 string 表格，也就是一个数据结构，它允许用一个整形 ID 来快速查阅 string：
+
+#+BEGIN_SRC C++
+  class StringTable{
+  public:
+	  StringTable() {}
+	  ...                     //插入，删除，查找函数等等，但是没有
+	  //copy/move/析构函数
+
+	  private:
+	  std::map<int, std::string> values;
+  };
+#+END_SRC
+假设这个类没有声明 copy 操作，move 操作，以及析构函数，这样编译器就会自动生成这些函数如果它们被使用了。这样非常方便。
+但是假设过了一段时间后，我们觉得记录默认构造函数以及析构函数会很有用，并且添加这样的功能也很简单：
+
+#+BEGIN_SRC C++
+  class StringTable {
+  public:
+	  StringTable()
+		  { makeLogEntry("Creating StringTable object"); } // added
+	  ~StringTable() // also
+		  { makeLogEntry("Destroying StringTable object"); } // added
+	  … // other funcs as before
+	  private:
+	  std::map<int, std::string> values; // as before
+  };
+#+END_SRC
+这看起来很合理，但是声明一个析构函数有一个重大的潜在副作用：它阻止 move 操作被生成。但是 copy 操作的生成不受影响。
+因此代码很可能会编译通过，执行，并且通过功能测试。这包括了 move 功能的测试，因为即使这个类中不再有 move 的能力，
+但是请求 move 它是能通过编译并且执行的。这样的请求在本 Item 的前面已经说明过了，它会导致 copy 的调用。
+这意味着代码中“move” StringTable 对象实际上是 copy 它们，也就是，copy std::map 对象。然后呢，
+copy 一个 std::map 对象很可能比 move 它会慢好几个数量级。因此，简单地为类增加一个析构函数就会引进一个重大的性能问题！
+如果之前把 copy 和 move 操作用“=default”显式地定义了，那么问题就不会出现了。
+
+因此 C++11 对特殊成员函数的控制规则是这样的：
++ 默认构造函数：和 C++98 中的规则一样，只在类中没有 user-declared 的构造函数时生成。
++ 析构函数：本质上和 C++98 的规则一样;唯一的不同就是析构函数默认声明为 noexcept（看 Item 14）;和 C++98 一样，只有基类的析构函数是 virtual 时，析构函数才会是 virtual。
++ 拷贝构造函数：C++98 一样的运行期行为：memberwise 拷贝构造 non-static 成员变量;只在类中没有 user-declared 拷贝构造函数时被生成;如果类中声明了一个 move 操作，它就会被删除（声明为 delete）;在有 user-declared 拷贝 operator=或析构函数时，这个函数能被生成，但是这种生成方法是被弃用的。
++ 拷贝 operator=：和 C++98 一样的运行期行为：memberwise 拷贝赋值 non-static 成员变量;只在类中没有 user-declared 拷贝 operator=时被生成;如果类中声明了一个 move 操作，它就会被删除（声明为 delete）;在有 user-declared 拷贝构造函数或析构函数时，这个函数能被生成，但是这种生成方法是被弃用的。
++ move 构造函数和 move operator=：每个都对 non-static 成员变量执行 memberwise move;有类中没有 user-declared 拷贝操作，move 操作或析构函数时被生成。
+
+注意关于成员函数模板的存在，这里没有规则规定它会阻止编译器生成特殊成员函数。这意味着如果 Widget 看起来像这样：
+
+#+BEGIN_SRC C++
+  class Widget {
+	  …
+	  template<typename T> // construct Widget
+	  Widget(const T& rhs); // from anything
+	  template<typename T> // assign Widget
+	  Widget& operator=(const T& rhs); // from anything
+	  …
+  };
+#+END_SRC
+即使这些 template 能实例化出拷贝构造函数和拷贝 operator=的函数签名（就是 T 是 Widget 的情况），编译器仍然会为 Widget 生成 copy 和 move 操作
+（假设以前抑制它们生成的条件满足了）。在所有的可能性中，这将作为一个勉强值得承认的边缘情况让你感到困惑，但是这是有原因的，我之后会提及它的。
+Item 26 说明了这是有很重要的原因的。
+** 记住
++ 特殊成员函数是那些编译器可能自己帮我们生成的函数：默认构造函数，析构函数，copy 操作，move 操作。
++ 只有在类中没有显式声明的 move 操作，copy 操作和析构函数时，move 操作才被自动生成。
++ 只有在类中没有显式声明的拷贝构造函数的时候，拷贝构造函数才被自动生成。只要存在 move 操作的声明，拷贝构造函数就会被删除（delete）。拷贝 operator=和拷贝构造函数的情况类似。在有显式声明的 copy 操作或析构函数时，另一个 copy 操作能被生成，但是这种生成方法是被弃用的
++ 成员函数模板永远不会抑制特殊成员函数的生成。
+* 参考
+原文：effective-modern-c++
+翻译：http://www.cnblogs.com/boydfd/

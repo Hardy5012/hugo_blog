@@ -1,0 +1,298 @@
+#+TITLE: C++ Ep03:Moving to Modern C++(1)
+#+DATE: 2017-12-22
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++
+#+CATEGORIES: Modern C++
+
+* item 7: 区别使用（）和{}创建对象
+** 记住
++ 括号初始化是最广泛使用的初始化语法，它防止变窄转换（narrowing conversion，并且对于 C++最令人头疼的解析有天生的免疫性.
+#+BEGIN_SRC C++
+  double x, y, z;
+  int sum1{ x + y + z }; // error! sum of doubles may
+  // not be expressible as int
+#+END_SRC
+
+#+BEGIN_SRC C++
+  Widget w2(); // most vexing parse! declares a function
+  // named w2 that returns a Widget!
+  Widget w3{}; // calls Widget ctor with no args
+#+END_SRC
+#+HTML: <!-- more -->
++ 在构造函数重载决议中，括号初始化尽最大可能与 std::initializer_list 参数匹配，即便其他构造函数看起来是更好的选择.
+
+  #+BEGIN_SRC C++
+	class Widget {
+	public:
+		Widget(int i, bool b); // as before
+		Widget(int i, double d); // as before
+		Widget(std::initializer_list<long double> il); // added
+		…
+	};
+
+	Widget w1(10, true); // uses parens and, as before,
+	// calls first ctor
+	Widget w2{10, true}; // uses braces, but now calls
+	// std::initializer_list ctor
+	// (10 and true convert to long double)
+	Widget w3(10, 5.0); // uses parens and, as before,
+	// calls second ctor
+	Widget w4{10, 5.0}; // uses braces, but now calls
+	// std::initializer_list ctor
+	// (10 and 5.0 convert to long double)
+  #+END_SRC
+
+  #+BEGIN_SRC C++
+	class Widget {
+	public:
+		Widget(int i, bool b); // as before
+		Widget(int i, double d); // as before
+		Widget(std::initializer_list<bool> il); // element type is
+	// now bool
+		… // no implicit
+	}; // conversion funcs
+	Widget w{10, 5.0}; // error! requires narrowing conversions
+  #+END_SRC
+
+  #+BEGIN_SRC C++
+	class Widget {
+	public:
+		Widget(int i, bool b); // as before
+		Widget(int i, double d); // as before
+	// std::initializer_list element type is now std::string
+		Widget(std::initializer_list<std::string> il);
+		… // no implicit
+	};
+
+	Widget w4{10, 5.0}; // uses braces, now calls second ctor
+  #+END_SRC
++ 对于数值类型的 std::vector 来说使用花括号初始化和小括号初始化会造成巨大的不同
+
+  #+BEGIN_SRC C++
+	std::vector<int> v1(10, 20); // use non-std::initializer_list
+	// ctor: create 10-element
+	// std::vector, all elements have
+	// value of 20
+	std::vector<int> v2{10, 20}; // use std::initializer_list ctor:
+	// create 2-element std::vector,
+	// element values are 10 and 20
+  #+END_SRC
++ 在模板类选择使用小括号初始化或使用花括号初始化创建对象是一个挑战
+
+  #+BEGIN_SRC C++
+	template<typename T, // type of object to create
+			 typename... Ts> // types of arguments to use
+	void doSomeWork(Ts&&... params)
+	{
+		create local T object from params...
+			…
+			}
+	std::vector<int> v;
+	…
+	doSomeWork<std::vector<int>>(10, 20);
+  #+END_SRC
+如果 doSomeWork 创建 localObject 时使用的是小括号，std::vector 就会包含 10 个元素。 如果 doSomeWork 创建 localObject 时使用的是花括号，std::vector 就会包含 2 个元素。
+* item 8: 优先考虑 nullptr 而非 0 和 NULL
+
+  #+BEGIN_SRC C++
+	int f1(std::shared_ptr<Widget> spw); // call these only when
+	double f2(std::unique_ptr<Widget> upw); // the appropriate
+	bool f3(Widget* pw); // mutex is locked
+
+	template<typename FuncType,
+			 typename MuxType,
+			 typename PtrType>
+	auto lockAndCall(FuncType func,
+					 MuxType& mutex,
+					 PtrType ptr) -> decltype(func(ptr))
+	{
+		MuxGuard g(mutex);
+		return func(ptr);
+	}
+
+	auto result1 = lockAndCall(f1, f1m, 0); // error!
+	…
+	auto result2 = lockAndCall(f2, f2m, NULL); // error!
+	…
+	Item 8 | 61
+	auto result3 = lockAndCall(f3, f3m, nullptr); // fine
+  #+END_SRC
+在上面的代码中 0 和 NULL 实际传入的是 int or int-like type，而不是想象中的空指针。
+** 记住
++ 优先考虑 nullptr 而非 0 和 NUL
++ 避免重载指针和整型
+* item 9: 优先考虑别名声明而非 typedefs
+特别的，别名声明可以被模板化但是 typedef 不能.
+
+#+BEGIN_SRC C++
+  template<typename T> // MyAllocList<T>
+  using MyAllocList = std::list<T, MyAlloc<T>>; // is synonym for
+  // std::list<T,
+  // MyAlloc<T>>
+  MyAllocList<Widget> lw; // client code
+
+  template<typename T> // MyAllocList<T>::type
+  struct MyAllocList { // is synonym for
+	  typedef std::list<T, MyAlloc<T>> type; // std::list<T,
+  }; // MyAlloc<T>>
+  MyAllocList<Widget>::type lw; // client code
+#+END_SRC
+它会变得很糟。如果你想使用在一个模板内使用 typedef 声明一个持有链表的对象，而这个对象又使用了模板参数，
+你就不得不在在 typedef 前面加上 typename.
+
+#+BEGIN_SRC C++
+  template<typename T>
+  class Widget { // Widget<T> contains
+  private: // a MyAllocList<T>
+	  typename MyAllocList<T>::type list; // as a data member
+	  …
+  };
+#+END_SRC
+这里 MyAllocList<T>::type 是一个依赖于模板参数 T 的类型。 因此 MyAllocList<T>::typ 是一个 *依赖类型* ，
+在 C++提到必须要在依赖类型名前加上 typename。 
+如果使用别名声明定义一个 MyAllocList，就不需要使用 typename
+
+#+BEGIN_SRC C++
+  template<typename T>
+  using MyAllocList = std::list<T, MyAlloc<T>>; // as before
+  template<typename T>
+  class Widget {
+  private:
+	  MyAllocList<T> list; // no "typename",
+	  … // no "::type"
+  };
+#+END_SRC
+当编译器处理 Widget 模板时遇到 MyAllocList<T>（使用模板别名声明的版本），它们知道 MyAllocList<T> 是一个类型名称， 
+因为 MyAllocList 是一个别名模板:它一定是一个 *类型名* 。
+因此 MyAllocList<T> 就是一个非依赖类型，就不要求必须使用 typename。
+
+而编译器在 Widget 模板处理 MyAllocList<T>::type 时，并不知道它是类型名称，因为可能存在 MyAllocList 的一个特化版本没有 MyAllocList::type。
+如下代码：
+
+#+BEGIN_SRC C++
+  class Wine { … };
+  template<> // MyAllocList specialization
+  class MyAllocList<Wine> { // for when T is Wine
+  private:
+	  enum class WineType // see Item 10 for info on
+	  { White, Red, Rose }; // "enum class"
+	  WineType type; // in this class, type is
+	  … // a data member!
+  };
+#+END_SRC
+正如你所见，MyAllocList<Wine>::type 不是一个类型名称，如果 Widget 使用 Wine 实例化，
+在 Widget 模板中的 MyAllocList<T>::type 将会是一个数据成员，不是一个类型。
+ 在 Widget 模板内，如果 MyAllocList<T>::type 表示的类型依赖于 T，所以编译器坚持要求你在前面加上 typename。
+
+
+对于 C++11 的类型转换 std::transformation::type 在 C++14 中变成了 std::transformation_t.
+
+#+BEGIN_SRC C++
+  std::remove_const<T>::type // C++11: const T → T
+  std::remove_const_t<T> // C++14 equivalent
+  std::remove_reference<T>::type // C++11: T&/T&& → T
+  std::remove_reference_t<T> // C++14 equivalent
+  std::add_lvalue_reference<T>::type // C++11: T → T&
+  std::add_lvalue_reference_t<T> // C++14 equivalent
+#+END_SRC
+** 记住
++ typedef 不支持模板化，但是别名声明支持。
++ 别名模板避免了使用"::type"后缀，而且在模板中使用 typedef 还需要在前面加上 typename
++ C++14 提供了 C++11 所有类型转换的别名声明版本
+* item 10:Prefer scoped enums to unscoped enums
+unscoped enums
+
+#+BEGIN_SRC C++
+  enum Color { black, white, red }; // black, white, red are
+  // in same scope as Color
+  auto white = false; // error! white already
+  // declared in this scope
+#+END_SRC
+
+因为 scoped enum 是通过 enum class 声明，所以它们有时候也被称为 *枚举类* (enum classes)。
+
+#+BEGIN_SRC C++
+  enum class Color { black, white, red }; // black, white, red
+  // are scoped to Color
+  auto white = false; // fine, no other,
+  // "white" in scope
+  Color c = white; // error! no enumerator named
+  // "white" is in this scope
+  Color c = Color::white; // fine
+  auto c = Color::white; // also fine (and in accord
+  // with Item 5's advice)
+#+END_SRC
+在下面场景中 uncoped enums 会有用：
+定义一个 std::tuple
+
+#+BEGIN_SRC C++
+  using UserInfo = // type alias; see Item 9
+	  std::tuple<std::string, // name
+				 std::string, // email
+				 std::size_t> ; // reputation
+
+  UserInfo uInfo; // object of tuple type
+  …
+  auto val = std::get<1>(uInfo); // get value of field 1
+#+END_SRC
+此时记住第 1 个字段是 email 并不合理，此时可用 unscoped enums 对应每个字段的名称
+
+#+BEGIN_SRC C++
+  enum UserInfoFields { uiName, uiEmail, uiReputation };
+  UserInfo uInfo; // as before
+  …
+  auto val = std::get<uiEmail>(uInfo); // ah, get value of
+  // email field
+#+END_SRC
+使用 UserInfoFields 隐式转换成 std::size_t，赋给 std::get。scoped enums 更繁琐：
+
+#+BEGIN_SRC C++
+  enum class UserInfoFields { uiName, uiEmail, uiReputation };
+  UserInfo uInfo; // as before
+  …
+  auto val =
+	  std::get<static_cast<std::size_t>(UserInfoFields::uiEmail)>
+	  (uInfo);
+#+END_SRC
+使用 std::underlying_type 获取 enums 的底层类型。模板函数 toUType 接受一个任意的枚举常量，并且可以作为一个编译时常量返回它的值
+
+#+BEGIN_SRC C++
+  template<typename E>
+  constexpr typename std::underlying_type<E>::type
+  toUType(E enumerator) noexcept
+  {
+	  return
+		  static_cast<typename
+					  std::underlying_type<E>::type>(enumerator);
+  }
+#+END_SRC
+
+在 C++14 中可简化
+
+#+BEGIN_SRC C++
+  template<typename E> // C++14
+  constexpr std::underlying_type_t<E>
+  toUType(E enumerator) noexcept
+  {
+	  return static_cast<std::underlying_type_t<E>>(enumerator);
+  }
+
+  template<typename E> // C++14
+  constexpr auto
+  toUType(E enumerator) noexcept
+  {
+	  return static_cast<std::underlying_type_t<E>>(enumerator);
+  }
+
+  auto val = std::get<toUType(UserInfoFields::uiEmail)>(uInfo);
+#+END_SRC
+
+** 记住：
++ scoped enums 的枚举常量只在本 enum 内可见，因为是强类型的，要转换成其它类型只能使用 cast.
++ scoped enums 和 unscoped enums 都有底层类型。只是 scoped enums 的底层类型是 int,
+unscoped enums 没有默认底层类型。
++ scoped enums 总是可向前声明，而 unscoped enums 只有声明底层类型时才可向前声明。
+
+* 参考
+effective-modern-c++

@@ -1,0 +1,104 @@
+#+TITLE: python 协程
+#+DATE: 2017-11-26
+#+LAYOUT: post
+#+TAGS: python
+#+CATEGORIES: notes
+
+* 协程
+ 1. 协程是一种用户态的轻量级线程，因为是非抢占式的，所以协程的调度完全由用户控制。协程拥有自己的寄存器上下文和栈。协程调度切换时，将寄存器上下文和栈保存到其他地方，在切回来的时候，恢复先前保存的寄存器上下文和栈，直接操作栈则基本没有内核切换的开销，可以不加锁的访问全局变量，所以上下文的切换非常快。
+ 2. 协程的本质上是：allowing multiple entry points for suspending and resuming execution at certain locations.允许多个入口对程序进行挂起、继续执行等操作
+
+#+HTML: <!-- more -->
+
+* yield
+ 1. 带有 yield 的函数不再是一个普通函数，而是一个生成器 generator.
+ 2. 调用生成器得到一个迭代器，利用 next()或 send(msg)不断获取数据.
+ 3. 调用者使用 send 方法传给 yield 表达式一个值，并从下一个 yield 表达式获取一个值.
+
+	#+BEGIN_SRC python
+	  def jump_range(upper):
+		  index = 0
+		  while index < upper:
+			  jump = yield index
+			  if jump is None:
+				  jump = 1
+			  index += jump
+	  jump = jump_range(5)
+	  print(jump)
+	  print(jump.send(None))
+	  print(jump.send(3))
+	  print(jump.send(None))
+	#+END_SRC
+
+	#+BEGIN_SRC dot
+	  <generator object jump_range at 0x10e283518>
+	  0
+	  3
+	  4
+	#+END_SRC
+
+* yield from
+ 1. 将 yield from 视为提供了一个调用者和子生成器之间的透明的双向通道。包括从子生成器获取数据以及向子生成器传送数据。
+ 2. 任何使用 send()方法发给委派生产器（即外部生产器）的值被直接传递给迭代器。如果 send 值是 None，则调用迭代器 next()方法；如果不为 None，则调用迭代器的 send()方法。如果对迭代器的调用产生 StopIteration 异常，委派生产器恢复继续执行 yield from 后面的语句；若迭代器产生其他任何异常，则都传递给委派生产器。
+ 3. 除了 GeneratorExit 异常外的其他抛给委派生产器的异常，将会被传递到迭代器的 throw()方法。如果迭代器 throw()调用产生了 StopIteration 异常，委派生产器恢复并继续执行，其他异常则传递给委派生产器。
+ 4. 如果 GeneratorExit 异常被抛给委派生产器，或者委派生产器的 close()方法被调用，如果迭代器有 close()的话也将被调用。如果 close()调用产生异常，异常将传递给委派生产器。否则，委派生产器将抛出 GeneratorExit 异常。
+ 5. 当迭代器结束并抛出异常时，yield from 表达式的值是其 StopIteration 异常中的第一个参数。
+ 6. 一个生成器中的 return expr 语句将会从生成器退出并抛出 StopIteration(expr)异常。
+
+* asyncio
+** 协程
+ 1. 通过 async 关键字定义一个协程（coroutine），协程也是一种对象。协程不能直接运行，需要把协程加入到事件循环（loop），由后者在适当的时候调用协程。asyncio.get_event_loop 方法可以创建一个事件循环，然后使用 run_until_complete 将协程注册到事件循环，并启动事件循环。
+** task
+   1. 协程对象不能直接运行，在注册事件循环的时候，其实是 run_until_complete 方法将协程包装成为了一个任务（task）对象。所谓 task 对象是 Future 类的子类。保存了协程运行后的状态，用于未来获取协程的结果。
+** 绑定回调
+ 1. 绑定回调，在 task 执行完毕的时候可以获取执行的结果，回调的最后一个参数是 future 对象，通过该对象可以获取协程返回值。如果回调需要多个参数，可以通过偏函数导入。
+
+	#+BEGIN_SRC python
+	  import time
+	  import asyncio
+
+	  now = lambda : time.time()
+
+	  async def do_some_work(x):
+		  print('Waiting: ', x)
+		  return 'Done after {}s'.format(x)
+
+	  def callback(future):
+		  print('Callback: ', future.result())
+    
+	  start = now()
+
+	  coroutine = do_some_work(2)
+	  loop = asyncio.get_event_loop()
+	  task = asyncio.ensure_future(coroutine)
+	  task.add_done_callback(callback)
+	  loop.run_until_complete(task)
+
+	  print('TIME: ', now() - start)
+	#+END_SRC
+
+	#+BEGIN_SRC python
+	  def callback(t, future):
+		  print('Callback:', t, future.result())
+    
+	  task.add_done_callback(functools.partial(callback, 2))
+	#+END_SRC
+
+* ThreadPoolExecutor and ProcessPoolExecutor
+使用 ThreadPoolExecutor 和 ProcessPoolExecutor 来混合同步和异步代码。
+- 对于 CPU 限制的工作负载：使用 ProcessPoolExecutor
+- 对于 IO 限制的工作负载：使用 ThreadPoolExecutor
+
+  #+BEGIN_SRC python
+	from concurrent.futures import ProcessPoolExecutor
+
+	class Handler(web.View):
+		def __init__(self, request):
+			super().__init__(request)
+			self.executor = ProcessPoolExecutor()
+
+		async def post(self):
+			data = await self.request.post()
+			thumbnail = await self.request.app.loop.run_in_executor(self.executor, resize, data['image'].file.read())
+			return web.Response(body=thumbnail, content_type='image/png')
+  #+END_SRC

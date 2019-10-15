@@ -1,0 +1,307 @@
+#+TITLE: Postgres 中的五种分页方式
+#+DATE: 2018-03-28
+#+LAYOUT: post
+#+CATEGORIES: data
+#+TAGS: Postgres,Paginate  
+
+* 任意查询分页
+** limit-offset
+limit-offset 是最简单，也是最危险的分页方式。不幸的是，它是 Web 应用程序开发教程的主要内容。对象关系映射（ORM）库使它变得简单而诱人，从 SQLAlchemy 的.slice（1，3）到 ActiveRecord 的.limit（1）.offset（3）到 Sequelize 的.findAll（{offset：3，limit：1}）
+。它们最后生成的 SQL 都是以 LIMIT 1 OFFSET3 结束。limit-offset 的使用非常普遍，并非巧合，您可以将其应用于任何查询而无需进一步修改。
+
+这个技术有两个大总是，结果不一致和偏移(offset)效率低下。一致性是指遍历结果集的意图应该检索每个项目一次，没有遗漏或重复。
+偏移效率是指将结果转移大量偏移所导致的延迟。
+
+这里有个 limit-offse 分页结果不一致的例子。假设从第 n 页跳到 n+1 页时，同时一个新的元素插入到第 n 页。
+这将同时导致重复（第 n 页的先前最后一个元素被推入第 n + 1 页）和一个省略（新元素）。
+或者考虑从用户移动到页面 n + 1 时从页面 n 中删除的元素。 页面 n + 1 的先前初始元素将被移动到页面 n 并被省略。
+
+现在分析低效率。大的偏移本质上就是昂贵的，即使存在索引，数据库也必须通过存储进行扫描，对行进行计数。
+为了利用索引，我们必须通过一个值过滤一列，但在这种情况下，我们需要一定数量的行，而不管它们的列值如何。
+此外，这些行的存储空间不需要具有相同的大小，有些可能存在于磁盘上，但标记为已删除，因此数据库无法使用简单的算术在磁盘上查找位置以开始读取结果。
+我们来衡量有多少慢。
+#+HTML: <!-- more -->
+
+#+BEGIN_SRC sql
+  -- Create table with random strings of various lengths
+  CREATE TABLE medley AS
+  SELECT
+  generate_series(1,10000000) AS n,
+  substr(concat(md5(random()::text), md5(random()::text)), 1, (random() * 64)::integer + 1) AS description;
+
+  -- Notify query planner of drastically changed table size
+  VACUUM ANALYZE;
+
+  -- Low offsets are refreshingly fast
+  EXPLAIN ANALYZE SELECT * FROM medley LIMIT 100;
+#+END_SRC
+  估计成本相当低：
+#+BEGIN_SRC sql
+	QUERY PLAN
+	--------------------------------------------------------------------------------------------------------------------
+	Limit  (cost=0.00..1.85 rows=100 width=38) (actual time=0.008..0.036 rows=100 loops=1)
+	->  Seq Scan on medley  (cost=0.00..185460.60 rows=9999660 width=38) (actual time=0.007..0.017 rows=100 loops=1)
+	Planning time: 0.040 ms
+	Execution time: 0.059 ms
+	(4 rows)
+#+END_SRC
+offset 等于 1000 时，需要 19ms 和 0.609ms 的执行时间。
+offset 等于 5000000,则提升到 92734ms，执行时间 758.484ms.
+
+这些问题并不一定意味着 limit-offset 不适用于您的情况。 在某些应用程序中，用户通常不会将许多页面推进到结果集中，甚至可能选择强制执行服务器页面限制。
+如果结果不一致和受限制的页码在您的应用程序中不成问题，那么 limit-offset 可能会满足您的需求。
+
+ *应用程序的分页深度受限，并且容忍结果不一致的情况适合 limit-offset* 。
+** Cursors
+尽管有其缺点，但 limit-offse 确实具有在服务器上无状态的优势。 将其与另一种分页方法（查询游标）进行对比。
+像 limit-offset 一样，游标可以用在任何查询，但是它们通过要求服务器为每个 HTTP 客户端保存专用数据库连接和事务而有所不同。
+
+下面是怎么使用游标：
+
+#+BEGIN_SRC sql
+  -- We must be in a transaction
+  BEGIN;
+  -- Open a cursor for a query
+  DECLARE medley_cur CURSOR FOR SELECT * FROM medley;
+  -- Retrieve ten rows
+  FETCH 10 FROM medley_cur;
+  -- ...
+  -- Retrieve ten more from where we left off
+  FETCH 10 FROM medley_cur;
+  -- All done
+  COMMIT;
+#+END_SRC
+游标在任意查询上具有分页一致性的理想属性，显示事务开始时存在的结果。 事务的隔离级别（链接是外部的）保证了我们对结果的分页视图不会改变。
+
+每种分页方法都有缺点，而游标存在的问题是资源使用和客户端与服务器之间的耦合。每个打开的事务都会消耗专用的数据库资源，而且对于太多的客户端来说不可扩展。
+还有一些可以存在于事务之外的“WITH HOLD”游标，但它们必须实现数据。 无论哪种方式，这使得光标分页仅适用于像内联网那样的小规模情况。
+
+将 HTTP 桥接到游标引入了复杂性。服务器必须通过令牌或在会话中保留诸如客户端 IP 地址之类的标识符来跨越请求标识客户端。
+服务器还必须判断何时由于不活动而释放事务。最后，服务器负载均衡变得复杂，因为每次客户端都必须每次连接到专用服务器。
+
+ *单服务器内网应用程序，它必须以不同且可变的顺序对查询进行分页，尤其是在结果一致性很重要的情况下适合游标* 。
+
+* 有序查询分页
+** Keyset 分页
+上面的技术可以分页查询，包括没有 order 的子句查询。尤其是在按索引列排序时，客户端可以使用当前页面中的值来选择要在下一页显示的项目。
+这就是 Keyset 分页。
+
+回到之前的示例：
+
+#+BEGIN_SRC sql
+  -- Add an index for keyset pagination (btrees support inequality)
+  CREATE INDEX n_idx ON medley USING btree (n);
+  SELECT * FROM medley ORDER BY n ASC LIMIT 5;
+#+END_SRC
+随着我的随机数据它返回：
+
+#+BEGIN_SRC sql
+  n |                         description
+  ---+-------------------------------------------------------------
+  1 | 74f70e009396
+  2 | 8dac5a085eb670a29058d
+  3 | fce303a32e89181bf5df1601487
+  4 | fddcced2c12e83516b3bd6cc94f23a012dfd
+  5 | f51ae548dd27f51147e53e839eeceb6b0c92922145276d668e73d4a6621
+  (5 rows)
+#+END_SRC
+现在，客户端可以查看此结果中的最大值 n 并将其用于请求下一页：
+
+#+BEGIN_SRC sql
+  SELECT * 
+  FROM medley
+  WHERE n > 5
+  ORDER BY n ASC
+  LIMIT 5;
+#+END_SRC
+即使 n> 5000000 的过滤仍然很快，不像 limit-offset 示例。
+
+#+BEGIN_SRC sql
+  QUERY PLAN
+  --------------------------------------------------------------------------------------------------------------------------------
+  Limit  (cost=0.43..0.62 rows=5 width=38) (actual time=0.101..0.103 rows=5 loops=1)
+  ->  Index Scan using n_idx on medley  (cost=0.43..185579.42 rows=5013485 width=38) (actual time=0.100..0.102 rows=5 loops=1)
+  Index Cond: (n > 5000000)
+  Planning time: 0.071 ms
+  Execution time: 0.119 ms
+  (5 rows)
+#+END_SRC
+Keyset 分页速度很快，并且也是一致的。在当前页面之前的任何插入/删除操作都不会影响结果。
+这种方法的两个缺点是缺乏随机访问和客户端与服务器之间可能的耦合。一般来说，没有办法直接跳到给定的页面，而无需访问先前的页面来观察它们的最大元素。
+在特定条件下，我们可以做得更好。如果索引列中的值是均匀分布的（甚至更好，没有间隙的连续数字），客户端可以通过一些数学运算来查找所需的页面，因为索引可以便宜地找到最大值：
+
+#+BEGIN_SRC sql
+  EXPLAIN ANALYZE SELECT max(n) FROM medley;
+  QUERY PLAN
+  ------------------------------------------------------------------------------------------------------------
+  Result  (cost=0.46..0.47 rows=1 width=0) (actual time=0.021..0.021 rows=1 loops=1)
+  InitPlan 1 (returns $0)
+  ->  Limit  (cost=0.43..0.46 rows=1 width=4) (actual time=0.018..0.018 rows=1 loops=1)
+  ->  Index Only Scan Backward using n_idx on medley  (cost=0.43..284688.43 rows=10000000 width=4) (actual time=0.017..0.017 rows=1 loops=1)
+  Index Cond: (n IS NOT NULL)
+  Heap Fetches: 0
+  Planning time: 0.087 ms
+  Execution time: 0.042 ms
+  (8 rows)
+#+END_SRC
+Keyset 分页，另一个需要注意的问题客户端/服务器耦合，首先，客户端不知道哪些列被索引。服务器可能需要提供具有固定顺序的端点，而不是允许客户端自定义顺序。
+鉴于客户端代码可能不知道要哪一列排序，服务器必须提供如何请求下一页的提示。
+由于用户通常以线性方式访问信息页面，因此 Keyset 分页通常被认为是在高流量 Web 服务器中对有序记录进行分页的最佳选择。
+
+ *可扩展的应用程序从列索引的数据中顺序提供数据进行比较(支持过滤),适合 Keyset 分页.*
+
+* 专业化异形分页
+** Clustered TID Scan
+我们可以针对使用低级别 PostgreSQL 功能的特殊情况设计非标准分页技术。例如，如果我们可以实现对数据的真正的随机访问访问
+1. 不要求所有页面的长度完全相同。
+2. 仅支持一个 order 的分页行。
+诀窍是选择返回的页面，这些页面直接与磁盘上的数据库页面或这些磁盘页面的部分相对应。PostgreSQL 数据库中的每个表都包含一个名为 *ctid* 的秘密列，用于标识其行
+
+#+BEGIN_SRC sql
+  SELECT ctid, * FROM medley WHERE n <= 10;
+  ctid  | n  |                         description
+  --------+----+-------------------------------------------------------------
+  (0,1)  |  1 | 74f70e009396
+  (0,2)  |  2 | 8dac5a085eb670a29058d
+  (0,3)  |  3 | fce303a32e89181bf5df1601487
+  (0,4)  |  4 | fddcced2c12e83516b3bd6cc94f23a012dfd
+  (0,5)  |  5 | f51ae548dd27f51147e53e839eeceb6b0c92922145276d668e73d4a6621
+  (0,6)  |  6 | eb9fe1dfe1e421903f96b3b5c5dfe1ee1253582d728c35b4ee7330b
+  (0,7)  |  7 | e95202d7f5c612f8523ae705d
+  (0,8)  |  8 | 6573b64aff262a2b940326
+  (0,9)  |  9 | a0a43
+  (0,10) | 10 | 82cdc134bd249a612cfddd3088dd09e32de5f4fa33
+  (10 rows)
+#+END_SRC
+每个 ctid 的形式（页面，行）。PostgreSQL 可以通过 ctid 非常快地检索行，实际上这是索引在内部如何工作的 - 它们将列值映射到 ctids。
+
+请注意，尽管 PostgreSQL 在 tid 类型上定义了一个顺序关系，但它不能通过不等式有效地检索 ctids
+
+#+BEGIN_SRC sql
+  EXPLAIN ANALYZE SELECT count(1) FROM medley WHERE ctid >= '(0,1)'::tid AND ctid < '(1,0)'::tid;
+  QUERY PLAN
+  ----------------------------------------------------------------------------------------------------------------------
+  Aggregate  (cost=235589.00..235589.01 rows=1 width=0) (actual time=1241.851..1241.852 rows=1 loops=1)
+  ->  Seq Scan on medley  (cost=0.00..235464.00 rows=50000 width=0) (actual time=477.933..1241.802 rows=116 loops=1)
+  Filter: ((ctid >= '(0,1)'::tid) AND (ctid < '(1,0)'::tid))
+  Rows Removed by Filter: 9999884
+  Planning time: 0.047 ms
+  Execution time: 1241.889 ms
+  (6 rows)
+#+END_SRC
+请求范围不起作用，但仍有办法有效请求磁盘页面中的所有行,每个页面都包含 currentsetting（'blocksize'）字节数据（通常 8 k）。
+行由 32 位指针引用，因此每页最多有 block_size / 4 行。（事实上，行通常比最小尺寸宽，并且块大小的四分之一提供每页行数的上限。）
+以下序列将在第 j 页中生成所有可能的 ctids.
+
+#+BEGIN_SRC sql
+  SELECT ('(' || j || ',' || s.i || ')')::tid
+  FROM generate_series(0,current_setting('block_size')::int/4) AS s(i);
+#+END_SRC
+让我们获取示例中第 0 页上的所有行
+
+#+BEGIN_SRC sql
+  SELECT * FROM medley WHERE ctid = ANY (ARRAY
+  (SELECT ('(0,' || s.i || ')')::tid
+  FROM generate_series(0,current_setting('block_size')::int/4) AS s(i)
+  )
+  );
+#+END_SRC
+此查询成本为 25.03..65.12，运行时间为 2.765ms。
+请求页面 10,000 具有相似的成本。 所以我们得到真正的随机访问，什么是不喜欢？
+
+这里有三个缺点：
+1. 当行被删除时，它们会在页面中留下空洞。
+2. 行的顺序可能没有意义。 数据库将新行插入到已删除行左侧的空洞中，这将导致行顺序无效。
+3. “Where”子句不受支持。
+
+在某些情况下，这不是问题。一种情况是其自然顺序对应于插入顺序的数据，例如仅追加时间序列数据。另一个是不经常更改的数据。
+这是因为我们可以通过 CLUSTER 命令控制页面内行的位置。
+
+让我们回到之前的例子。它在磁盘上的行由 n 列升序排列，因为这是我们插入它们的顺序。如果我们想按描述列进行排序会怎样？
+答案是通过索引描述列和聚类对表进行物理重新排序。
+
+#+BEGIN_SRC sql
+  CREATE INDEX description_idx ON medley USING btree (description);
+  CLUSTER medley USING description_idx;
+#+END_SRC
+现在选择第一页中的所有行将按 description 按字母顺序排列。如果表更改，然后新的行将按字母顺序追加，但只要表不更改将很好的返回条目。
+它也可以在更改之后定期重新聚集，尽管此操作锁定了表并且在人们需要访问时无法完成。
+
+最后，可以使用其总字节大小来确定表的总页数。
+
+#+BEGIN_SRC sql
+  SELECT pg_relation_size('medley') / current_setting('block_size')::int;
+#+END_SRC
+ *当需要快速深度随机页面访问并且不需要过滤时， 特别具有低变异行宽度的仅追加时间序列数据，适用 Clustered TID Scan* 。
+** Keyset with Estimated Bookmarks
+正如我们所看到的，除了通过客户端猜测之外，Keyset 分页不提供按百分比跳到结果。但是 PostgreSQL 统计收集器维护值分布的每列直方图。
+我们可以将这些估计值与极限值和小偏移值结合使用，通过混合方法获得快速的随机访问分页。
+
+首先让我们看看例子的统计数据：
+
+#+BEGIN_SRC sql
+  SELECT array_length(histogram_bounds, 1) - 1
+  FROM pg_stats
+  WHERE tablename = 'medley'
+  AND attname = 'n';
+#+END_SRC
+在我的数据库中，列 n 有 101 个绑定标记，即绑定标记之间的 100 个范围。
+这个值并不令人感到意外，因为我的数据是均匀分布的
+
+#+BEGIN_SRC sql
+  {719,103188,193973,288794, … ,9690475,9791775,9905770,9999847}
+#+END_SRC
+请注意，这些值是近似值。第一个数字不完全是零，最后一个数字不完全是一千万。
+这些范围将我们的信息分成块大小 B = 10,000,000 / 100 = 100,000 行。
+
+我们可以使用 PostgreSQL 状态收集器中的直方图范围来获得概率正确的页面。
+如果我们选择 W 宽度的客户端页面，我们如何请求第 i 个页面？它将驻留在块 iW / B 中，偏移量 iW％B 处。
+
+选择 W = 20 让我们从表中请求 270,000 页。请注意，PostgreSQL 数组是基数是一，所以我们必须调整数组查找中的值：
+
+#+BEGIN_SRC sql
+  WITH bookmark AS (
+  SELECT (histogram_bounds::text::int[])[((270000 * 20) / 100000)+1] AS start,
+  (histogram_bounds::text::int[])[((270000 * 20) / 100000)+2] AS stop
+  FROM pg_stats
+  WHERE tablename = 'medley'
+  AND attname = 'n'
+  LIMIT 1
+  )
+  SELECT *
+  FROM medley
+  WHERE n >= (select start from bookmark)
+  AND n < (select stop from bookmark)
+  ORDER BY n ASC
+  LIMIT 20
+  OFFSET ((270000 * 20) % 100000);
+#+END_SRC
+这表现得非常快（注意这里的偏移量恰好为零）。它返回 n = 5407259 到 5407278 的行。第 270000 页上的真值是 n = 5400001 到 5400020。
+这些值是 7239，或约 0.1％。
+
+我们很幸运，在我们的网页选择。 相比之下，74999 页需要 99980 的偏移量。
+我们确实知道我们的偏移量最多为 100,000。如果我们关心权衡，则上限在我们的控制范围内。
+通过调整 PostgreSQL 状态收集器，我们可以得到更精确的列直方图。
+
+#+BEGIN_SRC sql
+  ALTER TABLE medley ALTER COLUMN n SET statistics 1000;
+  VACUUM ANALYZE;
+#+END_SRC
+现在有 1000 个而不是 100 个直方图桶。数据库的值为
+
+#+BEGIN_SRC sql
+  {10,10230,20863, …, 9980444,9989948,9999995}
+#+END_SRC
+有了这个桶的大小，我们的 offset 将会是最多 10,000。
+权衡查询分析查看更多的值，从而减慢查询速度。所以这是潜在偏移效率与查询规划器开销之间的折衷。
+
+这种混合 keyset/offset 方法可能不符合许多真正的分页用例。
+它不适用于 where 子句。 这是不准确的，并且当表更改并且最近没有运行状态收集器时，情况会更加糟糕。
+
+ *当客户端想要深度但近似的随机访问而不允许额外的过滤时，适用 Keyset with Bookmarks* 。
+* 结论
+像许多工程决定一样，选择分页技术涉及权衡。可以肯定地说，keyset 分页最适用于具有有序线性访问的普通网站。
+然而，limit-offset 也有其优势，而更奇特的技术为某些类型的数据提供了特殊的性能特征。
+你可以看到很多可能性。选择合适的工具，不要让分页成为封闭的书。
+* 参考：
+https://www.citusdata.com/blog/2016/03/30/five-ways-to-paginate/

@@ -1,0 +1,24 @@
+#+TITLE: Machine Learning(0) introduction
+#+DATE: 2017-04-13
+#+LAYOUT: post
+#+TAGS: 
+#+CATEGORIES: ai
+
+* Supervised Learning and Unsupevised Learning
++ 监督学习（Supervised Learning）所给的样本已知道正确的输出是什么样子，对输入与输出有一定的了解。
++ 无监督学习（Unsupervised Learning）能够在很少或根本不知道结果应该是什么样的情况下解决问题。通过数据变量之间的关系数据聚类推导出这种结构。
+在无监督学习下，没有基于预测结果的反馈。
+#+HTML: <!-- more -->
+* Regression and Classification
++ 归回问题（Regression）预测一个连续的输出，也就说把输入映射到连续函数中。
++ 分类问题(Classification)以离散输出预测结果。换句话说，将变映射到离散类别。
+* Cost Function
+  *代价函数* (cost function)用来衡量预测函数的准确程度。
+* Gradient descent
+ *梯度下降* (Gradient descent)使用代价函数最小化。
+$$ \theta_j = \theta_j-\alpha\frac{\partial}{\partial\theta_j}J(\theta) \quad \mbox{$\alpha$ 为学习率} $$
+$$ \begin{align*} \text{repeat until convergence: } \lbrace & \newline \theta_0 := & \theta_0 - \alpha \frac{1}{m} \sum\limits_{i=1}^{m}(h_\theta(x_{i}) - y_{i}) \newline \theta_1 := & \theta_1 - \alpha \frac{1}{m} \sum\limits_{i=1}^{m}\left((h_\theta(x_{i}) - y_{i}) x_{i}\right) \newline \rbrace& \end{align*} $$
++ 注意在更新$\theta$时需要同步更新。 
++ 训练中不用初时高速学习速率，因为在接近局部最小值时。导数的绝对值会变小，这样步幅自然小了。
++ 训练就是不断的梯度下降直到收敛，导数为 0, 梯度下降中$\theta$不在变化。
++ 对特征缩放和均一化可以提高训练。

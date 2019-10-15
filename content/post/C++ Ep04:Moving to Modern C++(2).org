@@ -1,0 +1,287 @@
+#+TITLE: C++ Ep04:Moving to Modern C++(2)
+#+DATE: 2017-12-26
+#+LAYOUT: post
+#+OPTIONS: ^:nil
+#+TAGS: C++
+#+CATEGORIES: Modern C++
+* item 11: 优先考虑使用 deleted function 而非 private undefined
+在 C++ 98 中禁止拷贝和赋值实现如下：
+
+#+BEGIN_SRC C++
+  template <class charT, class traits = char_traits<charT> >
+  class basic_ios : public ios_base {
+  public:
+	  …
+	  private:
+	  basic_ios(const basic_ios& ); // not defined
+	  basic_ios& operator=(const basic_ios&); // not defined
+  };
+#+END_SRC
+In C++11,可使用 *= delete*
+
+#+BEGIN_SRC C++
+  template <class charT, class traits = char_traits<charT> >
+  class basic_ios : public ios_base {
+  public:
+	  …
+	  basic_ios(const basic_ios& ) = delete;
+	  basic_ios& operator=(const basic_ios&) = delete;
+	  …
+  };
+#+END_SRC
+#+HTML: <!-- more -->
+ delete 还可以删除实例化模板
+
+ #+BEGIN_SRC C++
+   template<typename T>
+   void processPointer(T* ptr);
+
+   template<>
+   void processPointer<void>(void*) = delete;
+   template<>
+   void processPointer<char>(char*) = delete;
+ #+END_SRC
+** 记住
++ 优先考虑使用 deleted function 而非 private undefined
++ 任何函数都能被删除（deleted），包括非成员函数和 template 实例化函数
+* item 12: 把重写函数声明为“override”
+因为 *overriding* (重写)听起来有点像 *overloading* (重载)，但是他们完全没有关系，让我们来弄清楚，重写虚函数是为了通过基类的接口来调用派生类的函数。
+
+#+BEGIN_SRC C++
+  class Base {
+  public:
+	  virtual void doWork(); // base class virtual function
+	  …
+  };
+  class Derived: public Base {
+  public:
+	  virtual void doWork(); // overrides Base::doWork
+	  … // ("virtual" is optional
+  }; // here)
+  std::unique_ptr<Base> upb = // create base class pointer
+	  std::make_unique<Derived>(); // to derived class object;
+  // see Item 21 for info on
+  … // std::make_unique
+  upb->doWork(); // call doWork through base
+  // class ptr; derived class
+  // function is invoked
+#+END_SRC
+为了能够成功重写，必须要符合一些要求：
++ 基类函数必须是 virtual 的。
++ 基类函数和派生类函数的名字必须完全一样（除了析构函数）
++ 基类函数和派生类函数的参数类型必须完全一样。
++ 基类函数和派生类函数的 const 属性必须完全一样。
++ 类函数和派生类函数的返回值类型以及异常规格（exception specification）必须是可兼容的
+这些限制是 C++98 要求的，C++11 还增加了一条:
++ 函数的引用限定符必须完全一样
+“成员函数引用限定符”是 C++11 中不太被知道的特性，所以即使你从来没有听过，也不需要吃惊。
+它们的出现是为了限制成员函数只能被左值或右值中的一个使用。使用它们时，不需要一定是 virtual 成员函数：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+
+	  void doWork() &; // this version of doWork applies
+  // only when *this is an lvalue
+	  void doWork() &&; // this version of doWork applies
+  }; // only when *this is an rvalue
+
+  Widget makeWidget(); // factory function (returns rvalue)
+  Widget w; // normal object (an lvalue)
+  w.doWork(); // calls Widget::doWork for lvalues
+  // (i.e., Widget::doWork &)
+  makeWidget().doWork(); // calls Widget::doWork for rvalues
+  // (i.e., Widget::doWork &&)
+#+END_SRC
+写需要这么多的的要求，就意味着一个小的差错就会有很大影响。举个例子，下面的代码完全没有问题，并且乍一看也很合理，
+但是它们没有包含虚函数重写
+
+#+BEGIN_SRC C++
+  class Base {
+  public:
+	  virtual void mf1() const;
+	  virtual void mf2(int x);
+	  virtual void mf3() &;
+	  void mf4() const;
+  };
+  class Derived: public Base {
+  public:
+	  virtual void mf1();
+	  virtual void mf2(unsigned int x);
+	  virtual void mf3() &&;
+	  void mf4() const;
+  };
+#+END_SRC
++ mf1 在基类中声明为 const，但是在派生类中却不是
++ mf2 在基类中的参数类型是 int，但是在派生类中的参数类型是 unsigned
++ mf3 在基类中是左值限定的，但是在派生类中是右值限定的
++ mf4 在基类中没声明为 virtual
+
+在派生类中，声明出正确的重写函数很重要，但是它们总是很容易出错，
+所以 C++11 给了你一个方法来明确一个派生类函数需要重写一个基类函数，这个方法就是把函数声明为 *override* 的
+
+#+BEGIN_SRC C++
+  class Derived: public Base {
+  public:
+	  virtual void mf1() override;
+	  virtual void mf2(unsigned int x) override;
+	  virtual void mf3() && override;
+	  virtual void mf4() const override;
+  };
+#+END_SRC
+把所有的派生类中的重写函数都声明为 override，这个准则不仅能让编译器告诉你什么地方声明了 override 却没有重写任何东西。
+而且当你考虑改变基类中虚函数的签名，它（这个准则）还能帮助你评估出影响大不大。如果派生类所有的地方都使用了 override，
+你只需要改变函数签名，然后再编译一次你的系统，看看你造成了多大的损害（也就是，各个派生类中有多少函数不能编译），
+然后再决定这些问题是否值得你去改变函数签名。
+
+C++11 介绍了两个和上下文相关的关键字(*contextual keywords*)，override 和 final。
+这两个关键字的特点是，只在特定的上下文中它们是保留的。
+比如 override 的情况，只有当它出现在成员函数声明的最后时，它才是保留的。
+这意味着如果你有历史遗留的代码，代码中已经使用了 override 作为 name，你不需要因为你使用了 C++11 而改变它：
+
+#+BEGIN_SRC C++
+  class Warning { // potential legacy class from C++98
+  public:
+	  …
+	  void override(); // legal in both C++98 and C++11
+	  … // (with the same meaning)
+  };
+#+END_SRC
+需要引用限定功能的成员函数不常见，但是它是存在的。
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  using DataType = std::vector<double>; // see Item 9 for
+	  … // info on "using"
+	  DataType& data() { return values; }
+	  …
+	  private:
+	  DataType values;
+  };
+
+  Widget w;
+  …
+  auto vals1 = w.data(); // copy w.values into vals1
+
+  Widget makeWidget();
+  auto vals2 = makeWidget().data(); // copy values inside the
+  // Widget into vals2
+#+END_SRC
+从 makeWidget 返回的临时对象（一个左值，），拷贝它的 std::vector 浪费时间，我们最好的做法是 move 它，
+但是因为 data 返回一个左值引用，所以 C++的规则要求编译器生成拷贝的代码。
+
+我们需要一个方法来明确一点，那就是当 data 被一个右值 Widget 调用时，结果也应该是一个右值。
+使用引用限定符来重载 data 的左值和右值版本让之成为可能：
+
+#+BEGIN_SRC C++
+  class Widget {
+  public:
+	  using DataType = std::vector<double>;
+	  
+	  DataType& data() & // for lvalue Widgets,
+		  { return values; } // return lvalue
+	  DataType data() && // for rvalue Widgets,
+		  { return std::move(values); } // return rvalue
+	  
+	  private:
+	  DataType values;
+  };
+#+END_SRC
+** 记住
++ 把重写函数声明为 override 的
++ 成员函数引用限定符能区别对待左值和右值对象（*this）
+* item 13: 优先考虑 const_iterators 而非 iterators
+const_iterators 在 C++11 比 98 好用多了，但 C++11 只添加了 non-member 版本的 begin 和 end 函数，
+而没有添加相应的 cbegin，cend，rbegin，rend，crbegin，crend。C++14 更正了这个问题。C++ 11 自己实现
+
+#+BEGIN_SRC C++
+  template <class C>
+  auto cbegin(const C& container)->decltype(std::begin(container))
+  {
+		  return std::begin(container); // see explanation below
+  }
+#+END_SRC
+看到 non-member 版本的 cbegin 没有调用 member 版本的 cbegin，你觉得很奇怪是吧？我也觉得奇怪，但是跟着代码看下来。
+cbegin 模板接受任何类型的参数来表示一个“类容器”（C），并且它通过它的 reference-to-const 形参（container）来使用实参。
+如果 C 是一个普通的容器类型（比如，一个 std::vector），container 将成为一个指向 const 容器的引用（也就是，const std::vector<int>&）。
+用 const 容器调用 non-member 版本的 begin 函数（由 C++11 提供）就能产生一个 const_iterator，
+并且这个 iterator 就是这个模板的返回值。用这样的方式来实现的优点是，对于那些提供了 begin 成员函数，但是没有提供 cbegin 成员函数的容器，
+能更好地工作（在 C++11 的 non-member 版本的 begin 中，会调用这个容器的 begin 成员函数）。
+因此，你能对只提供 begin 成员函数的容器，使用这个 non-member 版本的 cbegin。
+
+如果 C 是一个 built-in 数组类型，这个模板也能工作。在这种情况下，container 成为一个指向 const 数组的引用。C++11 在 non-member 版本的 begin 中，
+为数组提供了一个特殊的版本，这个版本的 begin 返回一个指向数组中第一个元素的指针。一个 const 数组的元素是 const 的，所以 non-member 版本的 begin 为
+const 数组返回一个 point-to-const 的指针，并且事实上，一个 point-to-const 的指针对于数组来说就是一个 const_iterator。
+（为了深入了解一个模板怎么为 built-in 数组特殊化，请看 Item 1 中，以指向数组的引用为参数的 template 类型推导的讨论）
+
+** 记住
++ 优先考虑 const_iterators 而非 iterators
++ 在最大限度的通用代码中，优先考虑 begin，end，rbegin 等非成员版本的成员函数。
+* item 14: 如果函数不会抛出异常就把它们声明为 noexcept
+  在设计接口的时候，一个函数是不是应该这么声明（noexcept）是一个需要考虑的问题。函数的异常抛出行为是客户最感兴趣的部分。
+调用者能查询一个函数的 noexcept 状态，并且这个查询的结果能影响异常安全（exception safety）或着调用代码的性能。
+因此，一个函数是否是 noexcept 就和一个成员函数是否是 cosnt 同样重要。当你知道一个函数不会抛出异常的时候却不声明它为 noexcept，
+就属于一个不好的接口设计。
+
+但是，这里还有一个额外的动机让我们把 noexcept 应用到不会产生异常的函数上：它允许编译器产生更好的目标代码。
+
+#+BEGIN_SRC C++
+  int f(int x) throw(); // no exceptions from f: C++98 style
+  int f(int x) noexcept; // no exceptions from f: C++11 style
+#+END_SRC
+如果，运行时期，一个异常逃离了 f，这违反了 f 的异常规范。在 C++98 的异常规范下，f 的调用者的调用栈被解开了，然后经过一些不相关的动作，程序终止执行。
+在 C++11 的异常规范下，运行期行为稍微有些不同：调用栈只有在程序终止前才有可能被解开。
+
+解开调用栈的时机，以及解开的可能性的不同，对于代码的产生有很大的影响。在一个 noexcept 函数中，如果一个异常能传到函数外面去，
+优化器不需要保持运行期栈为解开的状态，也不需要确保 noexcept 函数中的对象销毁的顺序和构造的顺序相反（因为 noexcept 是不应该抛出异常的）。
+
+我们值得去注意一些库的接口设计区分了宽接口（ *wide contract* ）和窄接口（ *narrow contract* ）。
+一个带宽接口的函数没有前提条件。这样的函数被调用时不需要注意程序的状态，它在传入的参数方面没有限制。
+带宽接口的函数永远不会展现未定义行为。
+
+不带宽接口条件的函数就是窄接口函数。对这些函数来说，如果传入的参数违反了前提条件，结果将是未定义的。
+
+如果你在写一个宽接口的函数，并且你知道你不会抛出一个异常，那就遵循本 Item 的建议，把它声明为 noexcept。对于那些窄接口的函数，
+情况将变得很棘手。举个例子，假设你正在写一个函数 f，这个函数接受一个 std::string 参数，并且它假设 f 的实现永远不会产生一个异常。
+这个假设建议把 f 声明为 noexcept。
+
+现在假设 f 有一个前提条件：std::string 参数的数据长度不会超过 32 个字节。如果用一个超过 32 字节的 std::string 来调用 f，f 的行为将是未定义的，
+因为一个不符合前提条件的参数会导致未定义行为。f 没有义务去检查前提条件，因为函数假设它们的前提条件是被满足的（调用者有责任确保这些假设是有效的）。
+由于前提条件的存在，把 f 声明为 noexcept 看起来是合理的。
+
+#+BEGIN_SRC C++
+  void f(const std::string& s) noexcept; // precondition:
+  // s.length() <= 32
+#+END_SRC
+但是假设 f 的实现选择检查前提条件是否被违反了。检查本不是必须的，但是它也不是被禁止的，并且检查一下前提条件是有用的（比如，在进行系统测试的时候）。
+调试时，捕捉一个抛出的异常总是比尝试找出未定义行为的原因要简单很多。但是要怎么报道出前提条件被违反了呢？
+只有报道了才能让测试工具或客户端的错误处理机制来捕捉到它。一个直接的方法就是抛出一个“前提条件被违反”的异常，但是如果 f 被声明为 noexcept，
+那么这个方法就不可行了，抛出一个异常就会导致程序终止。因此，区分宽接口和窄接口的库设计者通常只为宽接口函数提供 noexcept 声明。
+
+编译器通常不能帮助识别函数实现与异常规范之间的不一致性。下段代码是完全合法的
+
+#+BEGIN_SRC C++
+  void setup(); // functions defined elsewhere
+  void cleanup();
+  void doWork() noexcept
+  {
+	  setup(); // set up work to be done
+	  … // do the actual work
+		  cleanup(); // perform cleanup actions
+  }
+#+END_SRC
+在这里，尽管 doWork 调用了 non-noexcept 函数（setup 和 cleanup），doWork 还是被声明为 noexcept。这看起来很矛盾，
+但是有可能 setup 和 cleanup 在说明文档中说了它们永远不会抛出异常。就算它们没有在说明文档中说明，
+我们 还是有多理由来解释他们的声明式为什么是 non-noexcept。举个例子，它们可能是用 C 写的。（
+也可能是从 C 标准库移动到 std 命名空间但缺少异常规范的函数，比如，std::strlen 没有声明为 noexcept）或者它们可能是 C++98 标准库的一部分，
+没有使用 C++98 的异常规范，并且到目前为止还没有被修改成 C++11 的版本。
+
+因为这里有很多合适的理由来解释为什么 noexcept 函数可以调用缺乏 noexcept 保证的函数，所以 C++允许这样的代码，并且编译器通常不会对此发出警告。
+** 记住
++ noexcept 是函数接口的一部分，并且调用者可能会依赖这个接口
++ 比起 non-noexcept 函数，noexcept 函数可以更好地被优化
++ noexcept 对于 move 操作，swap，内存释放函数和析构函数是特别有价值的
++ 大部分函数是异常中立的而不是 noexcept
+* 参考
+effective-modern-c++

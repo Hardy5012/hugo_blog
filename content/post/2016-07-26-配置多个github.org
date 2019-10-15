@@ -1,0 +1,73 @@
+#+TITLE: 配置多个 git 账户
+#+DATE: 2016-07-26
+#+LAYOUT: post
+#+CATEGORIES: summary
+#+TAGS: git
+
+* 配置多个 git 账户
+ 在使用 ssh keys 时常因为有多个 git 账户，无法正常使用
+{{{more}}}
+** 生成 SSH keys
+
+   #+BEGIN_SRC sh
+     ssh-keygen -t rsa  -f ~/.ssh/id_github -C "youremail@xxx.com"
+   #+END_SRC
+   在 Git Bash 中执行命令根据提示一路回车，会在~/.ssh/目录下生成 id_github 开头的两个文件，把 id_github.pub 放到 github 的 SSH keys 中
+   然后生成别一个 keys（命名需要不同）
+** 把新的 keys 加到 SSH 服务中
+
+   #+BEGIN_SRC sh
+     ssh-agent bash
+     ssh-add ~/.ssh/id_github
+   #+END_SRC
+   查看有哪些 keys
+
+   #+BEGIN_SRC sh
+     ssh-add -l
+   #+END_SRC
+** 创建配置文件，在.ssh 目录下面创建 config 文件
+
+   #+BEGIN_SRC sh
+     # Default github user(github@mail.com),注意 User 项直接填 git，不用填在 github 的用户名
+     # 多个账户时，host 可以精确到用户名以做区分
+     Host github.com
+     HostName github.com
+     User git
+     IdentityFile ~/.ssh/id_github
+
+   #+END_SRC
+   修改权限
+
+   #+BEGIN_SRC sh
+     sudo chmod 600 config
+   #+END_SRC
+	 另：其它情况下使用时 User 必须输入正确的登入用户名
+** ssh 验证流程
+1. Client 将自己的公钥存放在 Server 上，追加在文件 authorized_keys 中。
+2. Server 端接收到 Client 的连接请求后，会在 authorized_keys 中匹配到 Client 的公钥 pubKey，并生成随机数 R，用 Client 的公钥对该随机数进行加密得到 pubKey®，然后将加密后信息发送给 Client 。
+3. Client 端通过私钥进行解密得到随机数 R，然后对随机数 R 和本次会话的 SessionKey 利用 MD5 生成摘要 Digest1，发送给 Server 端。
+4. Server 端会也会对 R 和 SessionKey 利用同样摘要算法生成 Digest 2。
+5. Server 端会最后比较 Digest1 和 Digest2 是否相同,完成认证过程。
+** 测试与 github 的连接
+
+   #+BEGIN_SRC sh
+     ssh -vT git@github.com  
+   #+END_SRC
+** 配置 eamail/name
+   1.取消 global
+   git config --global --unset user.email
+   git config --global --unset user.email
+   2.设置每个项目 repo 的自己的 user.email
+   git config user.email “xxxx@xx.com”
+   git config user.name “xxxx”
+   这样，以后每次在相应的 repo 下提交更改，都会自动匹配相应的 ssh-key 了
+** 问题汇聚
+   注意 repo 的地址格式需要是 ssh 可使用下面的命令来实现：
+
+   #+BEGIN_SRC sh
+     git remote set-url origin ssh 协议的 repo 地址
+   #+END_SRC
+
+** 参考
+   http://notes.seirhsiao.com/2016/01/24/2014-09-30-github-multiple-account-and-multiple-repository/
+ 

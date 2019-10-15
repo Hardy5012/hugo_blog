@@ -1,0 +1,61 @@
+#+TITLE: 为运行的容器挂载文件目录
+#+DATE: 2018-11-22
+#+LAYOUT: post
+#+TAGS: Docker
+#+CATEGORIES: summary
+
+在使用 docker 时，经常需要为已运行的容器挂载文件目录。方法如下:
+1. 首先使用 df 查看需要挂载的文件目录是在哪个文件系统上
+
+   #+BEGIN_SRC sh
+	 #on the host:
+	 df /home/huaming_li/github
+
+	 Filesystem              1K-blocks      Used Available Use% Mounted on
+	 /dev/mapper/centos-home 917199292 103069408 814129884  12% /home
+
+   #+END_SRC
+2. 通过/proc/self/mountinfo 查看哪个子目录是在 /home
+
+   #+BEGIN_SRC sh
+	 #on the host, look for '/home' in the MOUNT  column:
+	 cat /proc/self/mountinf
+
+	 65 18 0:6 / /sys/kernel/debug rw,relatime shared:26 - debugfs debugfs rw
+	 71 16 0:36 / /proc/sys/fs/binfmt_misc rw,relatime shared:27 - binfmt_misc binfmt_misc rw
+	 74 19 0:37 / /proc/fs/nfsd rw,relatime shared:28 - nfsd nfsd rw
+	 76 62 8:1 / /boot rw,relatime shared:29 - xfs /dev/sda1 rw,attr2,inode64,noquota
+	 78 62 253:2 / /home rw,relatime shared:30 - xfs /dev/mapper/centos-home rw,attr2,inode64,noquota
+	 80 62 0:38 / /var/lib/nfs/rpc_pipefs rw,relatime shared:31 - rpc_pipefs sunrpc rw
+	 348 24 0:3 / /run/docker/netns/ingress_sbox rw,nosuid,nodev,noexec,relatime shared:5 - proc proc rw
+	 357 24 0:3 / /run/docker/netns/1-7qyaqxyicw rw,nosuid,nodev,noexec,relatime shared:5 - proc proc rw
+	 187 24 0:39 / /run/user/1000 rw,nosuid,nodev,relatime shared:134 - tmpfs tmpfs rw,size=1621780k,mode=700,uid=1000,gid=1000
+	 195 18 0:41 / /sys/fs/fuse/connections rw,relatime shared:141 - fusectl fusectl rw
+   #+END_SRC
+3. 我们找到了需要创建的设备 253:2, 在容器中
+   #+BEGIN_SRC sh
+	 # in the container, create the device if it doesn't already exist:
+	 [ -b /dev/xvda1 ] || mknod --mode 0600 /dev/xvda1 b 253 2
+   #+END_SRC
+3. 把这个设备挂到容器中
+
+   #+BEGIN_SRC sh
+	 # in the container:
+	 $ mkdir -p /tmpmount
+	 $ mount /dev/xvda1 /tmpmount
+	 mount: permission denied
+   #+END_SRC
+
+4. 如果挂载提示权限失败，则需要 ns-enter， 这允许我们作为主机用户输入容器的命名空间：
+
+   #+BEGIN_SRC sh
+	 # on the host, get the container's PID:
+	 $ docker inspect --format {{.State.Pid}} <container_name_or_ID>
+	 4417
+	 # from the host, mount the volume inside the container's namespaces:
+	 $ nsenter --target 4417 --mount --uts --ipc --net --pid -- \
+	   mount /dev/xvda1 /tmpmount
+   #+END_SRC
+
+
+
