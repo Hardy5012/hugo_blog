@@ -8,3 +8,40 @@
 ** c++ protobuf 对 inner class 的修改，使用 mutable 来获取 inner class 指针
 
 {{{more}}}
+* SVN
+** 一次添加所有文件
+svn st | awk '{if ( $1 == "?") { print $2}}' | xargs svn add
+* linux clean cache
+** 仅清除页面缓存（PageCache）
+
+	 #+BEGIN_SRC sh
+		 sync; echo 1 > /proc/sys/vm/drop_caches   
+	 #+END_SRC
+** 清除目录项和 inode
+
+	 #+BEGIN_SRC sh
+		 sync; echo 2 > /proc/sys/vm/drop_caches
+	 #+END_SRC
+
+** 清除页面缓存，目录项和 inode
+
+	 #+BEGIN_SRC sh
+		 sync; echo 3 > /proc/sys/vm/drop_caches 
+	 #+END_SRC
+
+述命令的说明：
+
+sync 将刷新文件系统缓冲区（buffer），命令通过“;”分隔，顺序执行，shell 在执行序列中的下一个命令之前会等待命令的终止。正如内核文档中提到的，写入到 drop_cache 将清空缓存而不会杀死任何应用程序/服务，echo 命令做写入文件的工作。
+
+如果你必须清除磁盘高速缓存，第一个命令在企业和生产环境中是最安全，"...echo 1> ..."只会清除页面缓存。 在生产环境中不建议使用上面的第三个选项"...echo 3 > ..." ，除非你明确自己在做什么，因为它会清除缓存页，目录项和 inodes。
+* http 压力测试 ab
+输入命令： ab -n 100 -c 10 http://192.168.14.241:9081/api/v1/tick/sh510300/20200309
+
+其中－n 表示请求数，－c 表示并发数
+
+** 压力测试的几个重要指标
+Requests per second: 吞吐率，大家最关心的指标之一，相当于 LR 中的每秒事务数，后面括号中的 mean 表示这是一个平均值
+
+Time per request (mean): 用户平均请求等待时间，大家最关心的指标之二，相当于 LR 中的平均事务响应时间，后面括号中的 mean 表示这是一个平均值
+
+Time per request (mean, across all concurrent requests): 服务器平均请求处理时间，大家最关心的指标之三 

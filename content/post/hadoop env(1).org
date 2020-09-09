@@ -28,11 +28,13 @@ HA 功能通过配置 Active/Standby 两个节点 实现在集群中对 节点�
 ** 配置 hosts 以及 SSH 免密登入
 ** 安装 JDK
 ** zookeeper 安装配置
+	 + 修改/data/app/zookeeper 目录的 myid 文件中的编号（重要）
 ** hadoop 编译安装
+https://hadoop.apache.org/releases.html
 ** hadoop 配置
 1. core-site.xml
 
-	 #+BEGIN_SRC dot
+	 #+BEGIN_SRC nxml
 		 <configuration>
 		 <property>
 		 <name>fs.default.name</name>
@@ -68,7 +70,7 @@ HA 功能通过配置 Active/Standby 两个节点 实现在集群中对 节点�
 	 #+END_SRC
 2. hfds-site.xml
 
-	 #+BEGIN_SRC dot
+	 #+BEGIN_SRC nxml
 		 configuration>
 			 <!--property>
 				<name>dfs.namenode.secondary.http-address</name>
@@ -111,7 +113,7 @@ HA 功能通过配置 Active/Standby 两个节点 实现在集群中对 节点�
 				 </property>
 			<!-- nn2 的 http 通信地址 -->
 				 <property>
-						 <name>dfs.namenode.http-address.jed.nn1</name>
+						 <name>dfs.namenode.http-address.jed.nn2</name>
 						 <value>spark-slave1:50070</value>
 				 </property>
 
@@ -180,7 +182,7 @@ HA 功能通过配置 Active/Standby 两个节点 实现在集群中对 节点�
 	 #+END_SRC
 3. yarn-site.xml
 
-	 #+BEGIN_SRC css
+	 #+BEGIN_SRC nxml
 		 <configuration>
 			 <property>
 				 <name>yarn.nodemanager.aux-services</name>
@@ -234,7 +236,7 @@ HA 功能通过配置 Active/Standby 两个节点 实现在集群中对 节点�
 	 #+END_SRC
 4. mapred-site.xml
 
-	 #+BEGIN_SRC dot
+	 #+BEGIN_SRC nxml
 		 <configuration>
 		 <property>
 		 <name>mapreduce.framework.name</name>
@@ -254,59 +256,51 @@ HA 功能通过配置 Active/Standby 两个节点 实现在集群中对 节点�
 5. slaves
 
 * 启动
+0. 注意把防火墙先关了 systemctl stop firewalld
 1. 启动 ZK
 在各个配置 ZK 的节点运行 
-
 #+BEGIN_SRC sh
 	zkServer.sh start
-
 #+END_SRC
 可借助命令 zkServer.sh status  查看各个 ZK 的从属关系
-
 2. 格式化 ZK（仅第一次需要做）
 任意 ZK 节点上执行：hdfs zkfc -formatZK
-
 3. 启动 ZKFC
 ZKFC（zookeeperFailoverController）是用来监控 NN 状态，协助实现主备 NN 切换的，所以仅仅在主备 NN 节点上启动就行。
-
 #+BEGIN_SRC sh
 	hadoop-daemon.sh start zkfc
 #+END_SRC
-
 4. 格式化主 NN（仅第一次需要做，后面请忽操作）
-
 	 #+BEGIN_SRC sh
 		 hdfs namenode -format
 	 #+END_SRC
 5. 在备 NN 上同步主 NN 的元数据信息
-
 	 #+BEGIN_SRC sh
 		 hdfs namenode -bootstrapStandby
 	 #+END_SRC
-6. 启动 hdsf
-
-	 #+BEGIN_SRC sh
-		 start-dfs.sh 
-	 #+END_SRC
-也可以单独启动：
-6.1 启动 NN hadoop-daemon.sh start namenode
-6.2 设置和确认主 NN hdfs haadmin -getServiceState nn1
-如果是配置手动切换 NN 的，这一步是不可缺少的，因为系统还不知道谁是主 NN，两个节点的 NN 都是 Standby 状态。手动激活主 NN 的命令：hdfs haadmin -transitionToActive nn1
-6.3 启动 datanode hadoop-daemons.sh start datanode
-7. 启动 yarn
-
-	 #+BEGIN_SRC sh
-		 /start-yarn.sh 
-	 #+END_SRC
+6. 启动 yarn start-yarn.sh
 (spark-slave1 和 spark-slave2 的 resourcemanager 没有启动成功，需要后面单独启动)
-7.1 单独启动 ResourceManager yarn-daemon.sh start resourcemanager
-
+6.1 单独启动 ResourceManager yarn-daemon.sh start resourcemanager
 ResourceManager 也配置了 HA，根据命令查看节点状态：
-
 #+BEGIN_SRC sh
-	yarn rmadmin –getServiceState rm1
+	yarn rmadmin -getServiceState rm1
 #+END_SRC
-7.2 单独启动 nodemanager yarn-daemon.sh start nodemanager
+7. 启动 hdsf start-dfs.sh
+也可以单独启动：
+7.1 启动 NN hadoop-daemon.sh start namenode
+7.2 设置和确认主 NN hdfs haadmin -getServiceState nn1
+如果是配置手动切换 NN 的，这一步是不可缺少的，因为系统还不知道谁是主 NN，两个节点的 NN 都是 Standby 状态。
+手动激活主 NN 的命令：hdfs haadmin -transitionToActive nn1
+7.3 启动 datanode hadoop-daemons.sh start datanode
+7.4 单独启动 nodemanager yarn-daemon.sh start nodemanager
 8. 启动 MR JobHistory Server mr-jobhistory-daemon.sh start historyserver
 9. JPS 查看名节点的进程运行情况
+* 扩展集群
+** 问题 
+＋ dfs.namenode.shared.edits.dir
+URl 格式为 qjournal://host1:port1;host2:port2:host3:port3/journalId,注意* journalId * 放到最后一个就行了
++ zookeeper 修改/data/app/zookeeper 目录的 myid 文件中的编号（重要）
+ 3. 将原 journalnode 上的 edits 文件 scp 到新的 journalnode 节点
+***  Journal Storeage Directory not fomatted
+		从 hdfs-site.xml 文件中的 dfs.journalnode.edits.dir 配置项得到 edits 文件存储路径，scp 到新节点的相同路径，注意权限和属主要相同，可以用 scp -rp 来复制
 
